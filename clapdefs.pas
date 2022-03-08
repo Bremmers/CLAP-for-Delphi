@@ -18,14 +18,9 @@ type
 
 //version.h
 
-//typedef struct clap_version {
-//   // This is the major ABI and API design
-//   // Version 0.X.Y correspond to the development stage, API and ABI are not stable
-//   // Version 1.X.Y correspont to the release stage, API and ABI are stable
-//   alignas(4) uint32_t major;
-//   alignas(4) uint32_t minor;
-//   alignas(4) uint32_t revision;
-//} clap_version_t;
+// This is the major ABI and API design
+// Version 0.X.Y correspond to the development stage, API and ABI are not stable
+// Version 1.X.Y correspont to the release stage, API and ABI are stable
   Tclap_version = record
     major: uint32_t;
     minor: uint32_t;
@@ -34,7 +29,7 @@ type
 
 const
   CLAP_VERSION_MAJOR = 0;
-  CLAP_VERSION_MINOR = 18;
+  CLAP_VERSION_MINOR = 20;
   CLAP_VERSION_REVISION = 0;
 
   CLAP_VERSION: Tclap_version = (
@@ -43,11 +38,8 @@ const
     revision: CLAP_VERSION_REVISION;
   );
 
-//// For version 0, we require the same minor version because
-//// we may still break the ABI at this point
-//static CLAP_CONSTEXPR inline bool clap_version_is_compatible(const clap_version_t v) {
-//   return v.major == CLAP_VERSION_MAJOR && v.minor == CLAP_VERSION_MINOR;
-//}
+// For version 0, we require the same minor version because
+// we may still break the ABI at this point
 function clap_version_is_compatible(const v: Tclap_version): boolean; inline;
 
 
@@ -327,8 +319,9 @@ type
     ctx: TObject; // reserved pointer for the list
 
     // Pushes a copy of the event
-    //void (*push_back)(const struct clap_output_events *list, const clap_event_header_t *event);
-    push_back: procedure(list: Pclap_output_events; event: Pclap_event_header); cdecl;
+    // returns false if the event could not be pushed to the queue (out of memory?)
+    //bool (*try_push)(const struct clap_output_events *list, const clap_event_header_t *event);
+    try_push: function(list: Pclap_output_events; event: Pclap_event_header): boolean; cdecl;
   end;
 
 
@@ -373,6 +366,10 @@ const
 
   // Processing succeed, keep processing if the output is not quiet.
   CLAP_PROCESS_CONTINUE_IF_NOT_QUIET = 2;
+
+  // Rely upon the plugin's tail to determine if the plugin should continue to process.
+  // see clap_plugin_tail
+  CLAP_PROCESS_TAIL = 3;
 
   // Processing succeed, but no more processing is required,
   // until next event or variation in audio input.
@@ -546,6 +543,15 @@ type
     //void (*stop_processing)(const struct clap_plugin *plugin);
     stop_processing: procedure(plugin: Pclap_plugin); cdecl;
 
+    // - Clears all buffers, performs a full reset of the processing state (filters, oscillators,
+    //   enveloppes, lfo, ...) and kills all voices.
+    // - The parameter's value remain unchanged.
+    // - clap_process.steady_time may jump backward.
+    //
+    // [audio-thread & active_state]
+    //void (*reset)(const struct clap_plugin *plugin);
+	reset: procedure(plugin: Pclap_plugin); cdecl;
+
     // process audio, events, ...
     // [audio-thread & active_state & processing_state]
     //clap_process_status (*process)(const struct clap_plugin *plugin, const clap_process_t *process);
@@ -656,7 +662,7 @@ type
 //
 // Windows
 //   - %CommonFilesFolder%/CLAP/
-//   - %LOCALAPPDATA%/Programs/Common/VST3/
+//   - %LOCALAPPDATA%/Programs/Common/CLAP/
 //
 // MacOS
 //   - /Library/Audio/Plug-Ins/CLAP
@@ -727,35 +733,100 @@ type
 
 /// @page GUI
 ///
-/// This extension is splet in two interfaces:
-/// - `gui` which is the generic part
-/// - `gui_XXX` which is the platform specific interfaces; @see clap_gui_win32.
+/// This extension defines how the plugin will present its GUI.
+///
+/// There are two approaches:
+/// 1. the plugin creates a window and embeds it into the host's window
+/// 2. the plugin creates a floating window
+///
+/// Embedding the window gives more control to the host, and feels more integrated.
+/// Floating window are sometimes the only option due to technical limitations.
 ///
 /// Showing the GUI works as follow:
-/// 1. clap_plugin_gui->create(), allocates gui resources
-/// 2. clap_plugin_gui->set_scale()
-/// 3. clap_plugin_gui->get_size(), gets initial size
-/// 4. clap_plugin_gui_win32->embed(), or any other platform specific interface
-/// 5. clap_plugin_gui->show()
-/// 6. clap_plugin_gui->hide()/show() ...
-/// 7. clap_plugin_gui->destroy() when done with the gui
+///  1. clap_plugin_gui->is_api_supported(), check what can work
+///  2. clap_plugin_gui->create(), allocates gui resources
+///  3. if the plugin window is floating
+///  4.    -> clap_plugin_gui->set_transient()
+///  5.    -> clap_plugin_gui->suggest_title()
+///  6. else
+///  7.    -> clap_plugin_gui->set_scale(), if the function pointer is provided by the plugin
+///  8.    -> clap_plugin_gui->get_size(), gets initial size
+///  9.    -> clap_plugin_gui->can_resize()
+/// 10. clap_plugin_gui->show()
+/// 11. clap_plugin_gui->hide()/show() ...
+/// 12. clap_plugin_gui->destroy() when done with the gui
 ///
-/// Resizing the window:
+/// Resizing the window (initiated by the plugin, if embedded):
+/// 1. Plugins calls clap_host_gui->request_resize()
+/// 2. If the host returns true the new size is accepted,
+///    the host doesn't have to call clap_plugin_gui->set_size().
+///    If the host returns false, the new size is rejected.
+///
+/// Resizing the window (drag, if embedded)):
 /// 1. Only possible if clap_plugin_gui->can_resize() returns true
 /// 2. Mouse drag -> new_size
-/// 3. clap_plugin_gui->round_size(new_size) -> working_size
+/// 3. clap_plugin_gui->adjust_size(new_size) -> working_size
 /// 4. clap_plugin_gui->set_size(working_size)
 
 const
   CLAP_EXT_GUI = AnsiString('clap.gui');
 
+// If your windowing API is not listed here, please open an issue and we'll figure it out.
+// https://github.com/free-audio/clap/issues/new
+
+// uses physical size
+// embed using https://docs.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setparent
+  CLAP_WINDOW_API_WIN32 = AnsiString('win32');
+
+// uses logical size
+  CLAP_WINDOW_API_COCOA = AnsiString('cocoa');
+
+// uses physical size
+// embed using https://specifications.freedesktop.org/xembed-spec/xembed-spec-latest.html
+  CLAP_WINDOW_API_X11 = AnsiString('x11');
+
+// uses physical size
+// embed is currently not supported, use floating windows
+  CLAP_WINDOW_API_WAYLAND = AnsiString('wayland');
+
 type
+  Tclap_hwnd = pointer;
+  Tclap_nsview = pointer;
+  Tclap_xwnd = UInt32;
+
+// Represent a window reference.
+  Tclap_window = record
+    api: PAnsiChar; // one of CLAP_WINDOW_API_XXX
+    case integer of
+    0:(cocoa: Tclap_nsview);
+    1:(x11: Tclap_xwnd);
+    2:(win32: Tclap_hwnd);
+    3:(ptr: pointer); // for anything defined outside of clap
+  end;
+  Pclap_window = ^Tclap_window;
+
+
+// Size (width, height) is in pixels; the corresponding windowing system extension is
+// responsible to define if it is physical pixels or logical pixels.
   Tclap_plugin_gui = record
-    // Create and allocate all resources necessary for the gui.
-    // After this call, the GUI is ready to be shown but it is not yet visible.
+    // Returns true if the requested gui api is supported
     // [main-thread]
-    //bool (*create)(const clap_plugin_t *plugin);
-    create: function(plugin: Pclap_plugin): boolean; cdecl;
+    //bool (*is_api_supported)(const clap_plugin_t *plugin, const char *api, bool is_floating);
+    is_api_supported: function(plugin: Pclap_plugin; api: PAnsiChar; is_floating: boolean): boolean; cdecl;
+
+    // Create and allocate all resources necessary for the gui.
+    //
+    // If is_floating is true, then the window will not be managed by the host. The plugin
+    // can set its window to stays above the parent window, see set_transient().
+    // api may be null or blank for floating window.
+    //
+    // If is_floating is false, then the plugin has to embbed its window into the parent window, see
+    // set_parent().
+    //
+    // After this call, the GUI may not be visible yet; don't forget to call show().
+    // [main-thread]
+    //bool (*create)(const clap_plugin_t *plugin, const char *api, bool is_floating);
+    create: function(plugin: Pclap_plugin; api: PAnsiChar; is_floating: boolean): boolean; cdecl;
 
     // Free all resources associated with the gui.
     // [main-thread]
@@ -777,41 +848,58 @@ type
     //bool (*get_size)(const clap_plugin_t *plugin, uint32_t *width, uint32_t *height);
     get_size: function(plugin: Pclap_plugin; var width: uint32_t; var height: uint32_t): boolean; cdecl;
 
+    // Returns true if the window is resizeable (mouse drag).
+    // Only for embedded windows.
     // [main-thread]
     //bool (*can_resize)(const clap_plugin_t *plugin);
     can_resize: function(plugin: Pclap_plugin): boolean; cdecl;
 
     // If the plugin gui is resizable, then the plugin will calculate the closest
-    // usable size to the given arguments.
-    // The scaling is applied.
+    // usable size which fits in the given size.
     // This method does not change the size.
     //
+    // Only for embedded windows.
     // [main-thread]
-    //void (*round_size)(const clap_plugin_t *plugin, uint32_t *width, uint32_t *height);
-    round_size: procedure(plugin: Pclap_plugin; var width: uint32_t; var height: uint32_t); cdecl;
+    //bool (*adjust_size)(const clap_plugin_t *plugin, uint32_t *width, uint32_t *height);
+    adjust_size: function(plugin: Pclap_plugin; var width: uint32_t; var height: uint32_t): boolean; cdecl;
 
-    // Sets the window size
-    // Returns true if the size is supported.
+    // Sets the window size. Only for embedded windows.
     // [main-thread]
     //bool (*set_size)(const clap_plugin_t *plugin, uint32_t width, uint32_t height);
     set_size: function(plugin: Pclap_plugin; width: uint32_t; height: uint32_t): boolean; cdecl;
 
+    // Embbeds the plugin window into the given window.
+    // [main-thread & !floating]
+    //bool (*set_parent)(const clap_plugin_t *plugin, const clap_window_t *window);
+    set_parent: function(plugin: Pclap_plugin; window: Pclap_window): boolean; cdecl;
+
+    // Set the plugin floating window to stay above the given window.
+    // [main-thread & floating]
+    //bool (*set_transient)(const clap_plugin_t *plugin, const clap_window_t *window);
+    set_transient: function(plugin: Pclap_plugin; window: Pclap_window): boolean; cdecl;
+
+    // Suggests a window title. Only for floating windows.
+    // [main-thread]
+    //void (*suggest_title)(const clap_plugin_t *plugin, const char *title);
+    suggest_title: procedure(plugin: Pclap_plugin; title: PAnsiChar); cdecl;
+
     // Show the window.
     // [main-thread]
-    //void (*show)(const clap_plugin_t *plugin);
-    show: procedure(plugin: Pclap_plugin); cdecl;
+    //bool (*show)(const clap_plugin_t *plugin);
+    show: function(plugin: Pclap_plugin): boolean; cdecl;
 
     // Hide the window, this method do not free the resources, it just hides
     // the window content. Yet it maybe a good idea to stop painting timers.
     // [main-thread]
-    //void (*hide)(const clap_plugin_t *plugin);
-    hide: procedure(plugin: Pclap_plugin); cdecl;
+    //bool (*hide)(const clap_plugin_t *plugin);
+    hide: function(plugin: Pclap_plugin): boolean; cdecl;
   end;
   Pclap_plugin_gui = ^Tclap_plugin_gui;
 
   clap_host_gui = record
     // Request the host to resize the client area to width, height.
-    // Return true on success, false otherwise.
+    // Return true if the new size is accepted, false otherwise.
+    // The host doesn't have to call set_size().
     // [thread-safe]}
     //bool (*resize)(const clap_host_t *host, uint32_t width, uint32_t height);
     request_resize: function(host: Pclap_host; width: uint32_t; height: uint32_t): boolean; cdecl;
@@ -827,42 +915,15 @@ type
     // [main-thread] */
     //bool (*request_hide)(const clap_host_t *host);
     request_hide: function(host: Pclap_host): boolean; cdecl;
-  end;
 
-
-{$IFDEF MSWINDOWS}
-//ext\gui-win32.h
-
-const
-  CLAP_EXT_GUI_WIN32 = AnsiString('clap.gui-win32');
-
-// we don't want to include windows.h from this file.
-type
-  Tclap_hwnd = pointer;
-
-  Tclap_plugin_gui_win32 = record
+    // The floating window has been closed, or the connection to the gui has been lost.
+    //
+    // If was_destroyed is true, then the host must call clap_plugin_gui->destroy() to acknowledge
+    // the gui destruction.
     // [main-thread]
-    // bool (*attach)(const clap_plugin_t *plugin, clap_hwnd window);
-    attach: function(plugin: Pclap_plugin; window: Tclap_hwnd): boolean; cdecl;
+    //void (*closed)(const clap_host_t *host, bool was_destroyed);
+    closed: procedure(host: Pclap_host; was_destroyed: boolean); cdecl;
   end;
-  Pclap_plugin_gui_win32 = ^Tclap_plugin_gui_win32;
-{$ENDIF}
-
-
-{$IFDEF MACOS}
-//ext\gui-cocoa.h
-
-const
-  CLAP_EXT_GUI_COCOA = AnsiString('clap.gui-cocoa');
-
-type
-  Tclap_plugin_gui_cocoa = record
-    // [main-thread]
-    //bool (*attach)(const clap_plugin_t *plugin, void *nsView);
-    attach: function(plugin: Pclap_plugin; nsView: pointer): boolean; cdecl;
-  end;
-  Pclap_plugin_gui_cocoa = ^Tclap_plugin_gui_cocoa;
-{$ENDIF}
 
 
 //ext\log.h
@@ -949,15 +1010,14 @@ type
     //bool (*unregister_timer)(const clap_host_t *host, clap_id timer_id);
     unregister_timer: function(host: Pclap_host; timer_id: Tclap_id): boolean; cdecl;
   end;
-//} clap_host_timer_support_t;
 
 
 //ext\audio-ports.h
 
 /// This extension provides a way for the plugin to describe its current audio ports.
 ///
-/// If the plugin does not implement this extension, it will have a default 32 bits stereo input and output.
-/// This makes 32 bit support a requirement for both plugin and host.
+/// If the plugin does not implement this extension, it will have a default 32 bits stereo input and
+/// output. This makes 32 bit support a requirement for both plugin and host.
 ///
 /// The plugin is only allowed to change its ports configuration while it is deactivated.
 
@@ -972,6 +1032,7 @@ const
 
   // The prefers 64 bits audio with this port.
   CLAP_AUDIO_PORTS_PREFERS_64BITS = 1 shl 1;
+
 type
   Tclap_audio_port_info = record
     id: Tclap_id;                // stable identifier
@@ -1016,17 +1077,31 @@ type
   Pclap_plugin_audio_ports = ^Tclap_plugin_audio_ports;
 
 const
-  // The ports have changed, the host shall perform a full scan of the ports.
-  // This flag can only be used if the plugin is not active.
-  // If the plugin active, call host->request_restart() and then call rescan()
-  // when the host calls deactivate()
-  CLAP_AUDIO_PORTS_RESCAN_ALL = 1 shl 0;
-
   // The ports name did change, the host can scan them right away.
-  CLAP_AUDIO_PORTS_RESCAN_NAMES = 1 shl 1;
+  CLAP_AUDIO_PORTS_RESCAN_NAMES = 1 shl 0;
+
+  // [!active] The flags did change
+  CLAP_AUDIO_PORTS_RESCAN_FLAGS = 1 shl 1;
+
+  // [!active] The channel_count did change
+  CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT = 1 shl 2;
+
+  // [!active] The port type did change
+  CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE = 1 shl 3;
+
+  // [!active] The in-place pair did change, this requires.
+  CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR = 1 shl 4;
+   
+  // [!active] The list of ports have changed: entries have been removed/added.
+  CLAP_AUDIO_PORTS_RESCAN_LIST = 1 shl 5;
 
 type
   Tclap_host_audio_ports = record
+    // Checks if the host allows a plugin to change a given aspect of the audio ports definition.
+    // [main-thread]
+    //bool (*is_rescan_flag_supported)(const clap_host_t *host, uint32_t flag);
+    is_rescan_flag_supported: function(host: Pclap_host; flag: uint32_t): boolean;
+
     // Rescan the full list of audio ports according to the flags.
     // [main-thread,!active]
     //void (*rescan)(const clap_host_t *host, uint32_t flags);
@@ -1129,9 +1204,9 @@ type
 ///
 /// When the plugin changes a parameter value, it must inform the host.
 /// It will send @ref CLAP_EVENT_PARAM_VALUE event during process() or flush().
-/// - set the flag CLAP_EVENT_PARAM_BEGIN_ADJUST to mark the begining of automation recording
-/// - set the flag CLAP_EVENT_PARAM_END_ADJUST to mark the end of automation recording
-/// - set the flag CLAP_EVENT_PARAM_SHOULD_RECORD if the event should be recorded
+/// - set the flag CLAP_EVENT_BEGIN_ADJUST to mark the begining of automation recording
+/// - set the flag CLAP_EVENT_END_ADJUST to mark the end of automation recording
+/// - set the flag CLAP_EVENT_SHOULD_RECORD if the event should be recorded
 ///
 /// @note MIDI CCs are a tricky because you may not know when the parameter adjustment ends.
 /// Also if the hosts records incoming MIDI CC and parameter change automation at the same time,
@@ -1163,7 +1238,7 @@ type
 /// - if the plugin is not processing, call clap_host_params->request_flush() or
 ///   clap_host->request_process().
 /// - send an automation event and don't forget to set begin_adjust, end_adjust and should_record
-///   attributes
+///   flags
 /// - the plugin is responsible to send the parameter value to its audio processor
 ///
 /// IV. Turning a knob via automation
@@ -1178,9 +1253,9 @@ type
 /// - if the plugin is activated call clap_host->restart()
 /// - once the plugin isn't active:
 ///   - apply the new state
-///   - call clap_host_params->rescan(CLAP_PARAM_RESCAN_ALL)
-///   - if a parameter is created with an id that may have been used before,
+///   - if a parameter is gone or is created with an id that may have been used before,
 ///     call clap_host_params.clear(host, param_id, CLAP_PARAM_CLEAR_ALL)
+///   - call clap_host_params->rescan(CLAP_PARAM_RESCAN_ALL)
 
 const
   CLAP_EXT_PARAMS = AnsiString('clap.params');
@@ -1223,6 +1298,17 @@ const
   // A simple example would be a DC Offset, changing it will change the output signal and must be
   // processed.
   CLAP_PARAM_REQUIRES_PROCESS = 1 shl 9;
+
+  // When set:
+  // - automation can be recorded
+  // - automation can be played back
+  //
+  // The host can send live user changes for this parameter regardless of this flag.
+  //
+  // If this parameters affect the internal processing structure of the plugin, ie: max delay, fft
+  // size, ... and the plugins needs to re-allocate its working buffers, then it should call
+  // host->request_restart(), and perform the change once the plugin is re-activated.
+  CLAP_PARAM_IS_AUTOMATABLE = 1 shl 10;
 
 type
   Tclap_param_info_flags = uint32_t;
@@ -1424,9 +1510,9 @@ const
 type
   Tclap_note_name = record
     name: array[0..CLAP_NAME_SIZE - 1] of byte;
-    port: int32_t;
-    key: int32_t;
-    channel: int32_t; // -1 for every channels
+    port: int16_t;
+    key: int16_t;
+    channel: int16_t; // -1 for every channels
   end;
 
   Tclap_plugin_note_name = record
@@ -1550,19 +1636,17 @@ type
     //                      const clap_ostream_t             *clap);
     convert_state: function(converter:Pclap_vst2_converter; vst2: Pclap_istream; clap: Pclap_ostream): boolean; cdecl;
 
-    // converts the vst2 param id and normalized value to clap param id and
-    // plain value.
+    // converts the vst2 param id and normalized value to clap.
     // [thread-safe]
     //bool (*convert_normalized_value)(const struct clap_vst2_converter *converter,
     //                                 uint32_t                          vst2_param_id,
     //                                 double                            vst2_normalized_value,
     //                                 clap_id                          *clap_param_id,
-    //                                 double                           *clap_plain_value);
+    //                                 double                           *clap_normalized_value);
     convert_normalized_value: function(converter: Pclap_vst2_converter; vst2_param_id: uint32_t; vst2_normalized_value: double;
-                                       var clap_param_id: Tclap_id; var clap_plain_value: double): boolean; cdecl;
+                                       var clap_param_id: Tclap_id; var clap_normalized_value: double): boolean; cdecl;
 
-    // converts the vst2 param id and plain value to clap param id and
-    // plain value.
+    // converts the vst2 param id and plain value to clap.
     // [thread-safe]
     //bool (*convert_plain_value)(const struct clap_vst2_converter *converter,
     //                            uint32_t                          vst2_param_id,
@@ -1610,19 +1694,17 @@ type
     //                     const clap_ostream_t             *clap);
     convert_state: function(converter: Pclap_vst3_converter; vst3_processor, vst3_editor: Pclap_istream; clap: Pclap_ostream): boolean; cdecl;
 
-    // converts the vst3 param id and normalized value to clap param id and
-    // plain value.
+    // converts the vst3 param id and normalized value to clap.
     // [thread-safe]
     //bool (*convert_normalized_value)(const struct clap_vst3_converter *converter,
     //                                uint32_t                          vst3_param_id,
     //                                double                            vst3_normalized_value,
     //                                clap_id                          *clap_param_id,
-    //                                double                           *clap_plain_value);
+    //                                double                           *clap_normaliezd_value);
     convert_normalized_value: function(converter: Pclap_vst3_converter; vst3_param_id: uint32_t; vst3_normalized_value: double;
-                                       var clap_param_id: Tclap_id; var clap_plain_value: double): boolean; cdecl;
+                                       var clap_param_id: Tclap_id; var clap_normaliezd_value: double): boolean; cdecl;
 
-    // converts the vst3 param id and plain value to clap param id and
-    // plain value.
+    // converts the vst3 param id and plain value to clap.
     // [thread-safe]
     //bool (*convert_plain_value)(const struct clap_vst3_converter *converter,
     //                           uint32_t                          vst3_param_id,
@@ -1659,4 +1741,3 @@ begin
 end;
 
 end.
-
