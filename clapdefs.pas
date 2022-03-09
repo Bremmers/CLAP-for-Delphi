@@ -29,7 +29,7 @@ type
 
 const
   CLAP_VERSION_MAJOR = 0;
-  CLAP_VERSION_MINOR = 20;
+  CLAP_VERSION_MINOR = 21;
   CLAP_VERSION_REVISION = 0;
 
   CLAP_VERSION: Tclap_version = (
@@ -176,7 +176,7 @@ type
   end;
 
 const
-  // x >= 0, use 20 * log(4 * x)
+  // with 0 < x <= 4, plain = 20 * log(x)
   CLAP_NOTE_EXPRESSION_VOLUME = 0;
 
   // pan, 0 left, 0.5 center, 1 right
@@ -187,12 +187,10 @@ const
 
   // 0..1
   CLAP_NOTE_EXPRESSION_VIBRATO = 3;
-  CLAP_NOTE_EXPRESSION_BRIGHTNESS = 4;
-  CLAP_NOTE_EXPRESSION_BREATH = 5;
+  CLAP_NOTE_EXPRESSION_EXPRESSION = 4;
+  CLAP_NOTE_EXPRESSION_BRIGHTNESS = 5;
   CLAP_NOTE_EXPRESSION_PRESSURE = 6;
-  CLAP_NOTE_EXPRESSION_TIMBRE = 7;
 
-   // TODO...
 type
   Tclap_note_expression = int32_t;
 
@@ -373,7 +371,7 @@ const
 
   // Processing succeed, but no more processing is required,
   // until next event or variation in audio input.
-  CLAP_PROCESS_SLEEP = 3;
+  CLAP_PROCESS_SLEEP = 4;
 
 type
   Tclap_process_status = int32_t;
@@ -612,7 +610,7 @@ type
 
 type
   Tclap_plugin_invalidation_source = record
-    // Directory containing the file(s) to scan
+    // Directory containing the file(s) to scan, must be absolute
     directory: PAnsiChar;
     // globing pattern, in the form *.dll
     filename_glob: PAnsiChar;
@@ -642,7 +640,7 @@ type
     get: function(factory: Pclap_plugin_invalidation_factory; index: uint32_t): Pclap_plugin_invalidation_source; cdecl;
 
     // In case the host detected a invalidation event, it can call refresh() to let the
-    // plugin_entry scan the set of plugins available.
+    // plugin_entry update the set of plugins available.
     // If the function returned false, then the plugin needs to be reloaded.
     //bool (*refresh)(const struct clap_plugin_invalidation_factory *factory);
     refresh: function(factory: Pclap_plugin_invalidation_factory): boolean; cdecl;
@@ -656,9 +654,8 @@ type
 // CLAP plugins standard search path:
 //
 // Linux
-//   - /usr/lib/clap/
 //   - ~/.clap
-//     `-> ~/.local/lib/clap/ is considered, see https://github.com/free-audio/clap/issues/46
+//   - /usr/lib/clap
 //
 // Windows
 //   - %CommonFilesFolder%/CLAP/
@@ -1026,8 +1023,9 @@ const
   CLAP_PORT_MONO = AnsiString('mono');
   CLAP_PORT_STEREO = AnsiString('stereo');
 
-  // This port main audio input or output.
+  // This port is the main audio input or output.
   // There can be only one main input and main output.
+  // Main port must be at index 0.
   CLAP_AUDIO_PORT_IS_MAIN = 1 shl 0;
 
   // The prefers 64 bits audio with this port.
@@ -1284,7 +1282,7 @@ const
   // It implies that the parameter is stepped.
   // min: 0 -> bypass off
   // max: 1 -> bypass on
-  CLAP_PARAM_IS_BYPASS = (1 shl 6) or CLAP_PARAM_IS_STEPPED;
+  CLAP_PARAM_IS_BYPASS = 1 shl 6;
 
   // The parameter can't be changed by the host.
   CLAP_PARAM_IS_READONLY = 1 shl 7;
@@ -1741,3 +1739,4 @@ begin
 end;
 
 end.
+
