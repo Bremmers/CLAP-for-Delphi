@@ -29,7 +29,7 @@ type
 
 const
   CLAP_VERSION_MAJOR = 0;
-  CLAP_VERSION_MINOR = 21;
+  CLAP_VERSION_MINOR = 23;
   CLAP_VERSION_REVISION = 0;
 
   CLAP_VERSION: Tclap_version = (
@@ -100,14 +100,11 @@ const
   // indicate a live momentary event
   CLAP_EVENT_IS_LIVE = 1 shl 0;
 
-  // live user adjustment begun
-  CLAP_EVENT_BEGIN_ADJUST = 1 shl 1;
-
-  // live user adjustment ended
-  CLAP_EVENT_END_ADJUST = 1 shl 2;
-
-  // should record this event be recorded?
-  CLAP_EVENT_SHOULD_RECORD = 1 shl 3;
+  // indicate that the event should not be recorded.
+  // For example this is useful when a parameter changes because of a MIDI CC,
+  // because if the host records both the MIDI CC automation and the parameter
+  // automation there will be a conflict.
+  CLAP_EVENT_DONT_RECORD = 1 shl 1;
 
 // Some of the following events overlap, a note on can be expressed with:
 // - CLAP_EVENT_NOTE_ON
@@ -152,10 +149,15 @@ const
   CLAP_EVENT_PARAM_VALUE = 5;
   CLAP_EVENT_PARAM_MOD = 6;
 
-  CLAP_EVENT_TRANSPORT = 7;  // update the transport info; clap_event_transport
-  CLAP_EVENT_MIDI = 8;       // raw midi event; clap_event_midi
-  CLAP_EVENT_MIDI_SYSEX = 9; // raw midi sysex event; clap_event_midi_sysex
-  CLAP_EVENT_MIDI2 = 10;     // raw midi 2 event; clap_event_midi2
+  // uses clap_event_param_gesture
+  // Indicates that a parameter gesture begun or ended.
+  CLAP_EVENT_PARAM_GESTURE_BEGIN = 7;
+  CLAP_EVENT_PARAM_GESTURE_END = 8;
+
+  CLAP_EVENT_TRANSPORT = 9;   // update the transport info; clap_event_transport
+  CLAP_EVENT_MIDI = 10;       // raw midi event; clap_event_midi
+  CLAP_EVENT_MIDI_SYSEX = 11; // raw midi sysex event; clap_event_midi_sysex
+  CLAP_EVENT_MIDI2 = 12;      // raw midi 2 event; clap_event_midi2
 
 type
   Tclap_event_type = int32_t;
@@ -236,6 +238,13 @@ type
 //
 //   alignas(8) double amount; // modulation amount
 //} clap_event_param_mod_t;
+
+  Tclap_event_param_gesture = record
+    header: Tclap_event_header;
+
+    // target parameter
+    param_id: Tclap_id; // @ref clap_param_info.id
+  end; 
 
 //enum clap_transport_flags {
 const
@@ -711,7 +720,7 @@ type
     {* returns the number of bytes read.
     * 0 for end of file.
     * -1 on error. */}
-    //int64_t (*read)(struct clap_istream *stream, void *buffer, uint64_t size);
+    //int64_t (*read)(const struct clap_istream *stream, void *buffer, uint64_t size);
     read: function(stream: Pclap_istream; buffer: pointer; size: uint64_t): int64_t; cdecl;
   end;
 
@@ -721,7 +730,7 @@ type
 
     // returns the number of bytes written.
     // -1 on error. */}
-    //int64_t (*write)(struct clap_ostream *stream, const void *buffer, uint64_t size);
+    //int64_t (*write)(const struct clap_ostream *stream, const void *buffer, uint64_t size);
     write: function(stream: Pclap_ostream; buffer: pointer; size: uint64_t): int64_t; cdecl;
   end;
 
@@ -961,13 +970,13 @@ type
     // Saves the plugin state into stream.
     // Returns true if the state was correctly saved.
     // [main-thread]
-    //bool (*save)(const clap_plugin_t *plugin, clap_ostream_t *stream);
+    //bool (*save)(const clap_plugin_t *plugin, const clap_ostream_t *stream);
     save: function(plugin: Pclap_plugin; stream: Pclap_ostream): boolean; cdecl;
 
     // Loads the plugin state from stream.
     // Returns true if the state was correctly restored.
     // [main-thread]
-    //bool (*load)(const clap_plugin_t *plugin, clap_istream_t *stream);
+    //bool (*load)(const clap_plugin_t *plugin, const clap_istream_t *stream);
     load: function(plugin: Pclap_plugin; stream: Pclap_istream): boolean; cdecl;
   end;
   Pclap_plugin_state = ^Tclap_plugin_state;
@@ -1135,7 +1144,7 @@ const
 
 type
   Tclap_note_port_info = record
-    id: Tclap_id;                       // stable identifier
+    id: Tclap_id;                 // stable identifier
     supported_dialects: uint32_t; // bitfield, see clap_note_dialect
     preferred_dialect: uint32_t;  // one value of clap_note_dialect
     name: array[0..CLAP_NAME_SIZE - 1] of byte;        // displayable name, i18n?
