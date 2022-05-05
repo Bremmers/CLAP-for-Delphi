@@ -29,8 +29,8 @@ type
 
 const
   CLAP_VERSION_MAJOR = 0;
-  CLAP_VERSION_MINOR = 23;
-  CLAP_VERSION_REVISION = 0;
+  CLAP_VERSION_MINOR = 24;
+  CLAP_VERSION_REVISION = 1;
 
   CLAP_VERSION: Tclap_version = (
     major: CLAP_VERSION_MAJOR;
@@ -124,9 +124,30 @@ const
   // NOTE_CHOKE is meant to choke the voice(s), like in a drum machine when a closed hihat
   // chokes an open hihat.
   //
-  // NOTE_END is sent by the plugin to the host, when a voice terminates.
-  // When using polyphonic modulations, the host has to start voices for its modulators.
-  // This message helps the host to track the plugin's voice management.
+  // NOTE_END is sent by the plugin to the host. The port, channel and key are those given
+  // by the host in the NOTE_ON event. In other words, this event is matched against the
+  // plugin's note input port. NOTE_END is only requiered if the plugin marked at least
+  // one of its parameters as polyphonic.
+  //
+  // When using polyphonic modulations, the host has to allocate and release voices for its
+  // polyphonic modulator. Yet only the plugin effectively knows when the host should terminate
+  // a voice. NOTE_END solves that issue in a non-intrusive and cooperative way.
+  //
+  // CLAP assumes that the host will allocate a unique voice on NOTE_ON event for a given port,
+  // channel and key. This voice will run until the plugin will instruct the host to terminate
+  // it by sending a NOTE_END event.
+  //
+  // Consider the following sequence:
+  // - process()
+  //    Host->Plugin NoteOn(port:0, channel:0, key:16, time:t0)
+  //    Host->Plugin NoteOn(port:0, channel:0, key:64, time:t0)
+  //    Host->Plugin NoteOff(port:0, channel:0, key:16, t1)
+  //    Host->Plugin NoteOff(port:0, channel:0, key:64, t1)
+  //    # on t2, both notes did terminate
+  //    Host->Plugin NoteOn(port:0, channel:0, key:64, t3)
+  //    # Here the plugin finished to process all the frames and will tell the host
+  //    # to terminate the voice on key 16 but not 64, because a note has been started at t3
+  //    Plugin->Host NoteEnd(port:0, channel:0, key:16, time:ignored)
   //
   // Those four events use clap_event_note.
   CLAP_EVENT_NOTE_ON = 0;
@@ -674,6 +695,9 @@ type
 //   - /Library/Audio/Plug-Ins/CLAP
 //   - ~/Library/Audio/Plug-Ins/CLAP
 //
+// Additionally, extra path may be specified in CLAP_PATH environment variable.
+// CLAP_PATH is formated in the same way as the OS' binary search path (PATH on UNIX, Path on Windows).
+//
 // Every methods must be thread-safe.
   Tclap_plugin_entry = record
     clap_version: Tclap_version;     // initialized to CLAP_VERSION
@@ -756,11 +780,13 @@ type
 ///  5.    -> clap_plugin_gui->suggest_title()
 ///  6. else
 ///  7.    -> clap_plugin_gui->set_scale(), if the function pointer is provided by the plugin
-///  8.    -> clap_plugin_gui->get_size(), gets initial size
-///  9.    -> clap_plugin_gui->can_resize()
-/// 10. clap_plugin_gui->show()
-/// 11. clap_plugin_gui->hide()/show() ...
-/// 12. clap_plugin_gui->destroy() when done with the gui
+///  8.    -> clap_plugin_gui->can_resize()
+///  9.    -> if resizable and has known size from previous session, clap_plugin_gui->set_size()
+/// 10.    -> else clap_plugin_gui->get_size(), gets initial size
+/// 11.    -> clap_plugin_gui->set_parent()
+/// 12. clap_plugin_gui->show()
+/// 13. clap_plugin_gui->hide()/show() ...
+/// 14. clap_plugin_gui->destroy() when done with the gui
 ///
 /// Resizing the window (initiated by the plugin, if embedded):
 /// 1. Plugins calls clap_host_gui->request_resize()
@@ -784,7 +810,7 @@ const
 // embed using https://docs.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setparent
   CLAP_WINDOW_API_WIN32 = AnsiString('win32');
 
-// uses logical size
+// uses logical size, don't call clap_plugin_gui->set_scale()
   CLAP_WINDOW_API_COCOA = AnsiString('cocoa');
 
 // uses physical size
@@ -811,6 +837,12 @@ type
   end;
   Pclap_window = ^Tclap_window;
 
+// Information to improve window resizement when initiated by the host or window manager.
+  Tclap_gui_resize_hints = record
+    preseve_aspect_ratio: boolean;
+    aspect_ratio_width: uint32_t;
+    aspect_ratio_height: uint32_t;
+  end; 
 
 // Size (width, height) is in pixels; the corresponding windowing system extension is
 // responsible to define if it is physical pixels or logical pixels.
@@ -819,6 +851,12 @@ type
     // [main-thread]
     //bool (*is_api_supported)(const clap_plugin_t *plugin, const char *api, bool is_floating);
     is_api_supported: function(plugin: Pclap_plugin; api: PAnsiChar; is_floating: boolean): boolean; cdecl;
+
+    // Returns true if the plugin has a preferred api.
+    // The host has no obligation to honor the plugin preferrence, this is just a hint.
+    // [main-thread]
+    //bool (*get_preferred_api)(const clap_plugin_t *plugin, const char **api, bool *is_floating);
+    get_preferred_api: function(plugin: Pclap_plugin; var api: PAnsiChar; var is_floating: boolean): boolean; cdecl;
 
     // Create and allocate all resources necessary for the gui.
     //
@@ -840,11 +878,14 @@ type
     destroy: procedure(plugin: Pclap_plugin); cdecl;
 
     // Set the absolute GUI scaling factor, and override any OS info.
-    // If the plugin does not provide this function, then it should work out the scaling factor
-    // itself by querying the OS directly.
+    // Should not be used if the windowing api relies upon logical pixels.
     //
-    // Return false if the plugin can't apply the scaling; true on success.
-    // [main-thread,optional]
+    // If the plugin prefers to work out the scaling factor itself by querying the OS directly,
+    // then ignore the call.
+    //
+    // Returns false if the call was ignored.
+    // Returns true if the scaling could be applied, false otherwise.
+    // [main-thread]
     //bool (*set_scale)(const clap_plugin_t *plugin, double scale);
     set_scale: function(plugin: Pclap_plugin; scale: double): boolean; cdecl;
 
@@ -859,6 +900,11 @@ type
     // [main-thread]
     //bool (*can_resize)(const clap_plugin_t *plugin);
     can_resize: function(plugin: Pclap_plugin): boolean; cdecl;
+
+    // Returns true if the plugin can provide hints on how to resize the window.
+    // [main-thread]
+    //bool (*get_resize_hints)(const clap_plugin_t *plugin, clap_gui_resize_hints_t *hints);
+    get_resize_hints: function(plugin: Pclap_plugin; var hints: Tclap_gui_resize_hints): boolean; cdecl;
 
     // If the plugin gui is resizable, then the plugin will calculate the closest
     // usable size which fits in the given size.
@@ -903,22 +949,32 @@ type
   Pclap_plugin_gui = ^Tclap_plugin_gui;
 
   clap_host_gui = record
+    // The host should call get_resize_hints() again.
+    // [thread-safe]
+    //void (*resize_hints_changed)(const clap_host_t *host);
+    resize_hints_changed: procedure(host: Pclap_host); cdecl;
+
     // Request the host to resize the client area to width, height.
     // Return true if the new size is accepted, false otherwise.
     // The host doesn't have to call set_size().
-    // [thread-safe]}
+    //
+    // Note: if not called from the main thread, then a return value simply means that the host
+    // acknowledge the request and will process it asynchronously. If the request then can't be
+    // satisfied then the host will call set_size() to revert the operation.
+    //
+    // [thread-safe] */
     //bool (*resize)(const clap_host_t *host, uint32_t width, uint32_t height);
     request_resize: function(host: Pclap_host; width: uint32_t; height: uint32_t): boolean; cdecl;
 
     // Request the host to show the plugin gui.
     // Return true on success, false otherwise.
-    // [main-thread] */
+    // [thread-safe] */
     //bool (*request_show)(const clap_host_t *host);
     request_show: function(host: Pclap_host): boolean; cdecl;
 
     // Request the host to hide the plugin gui.
     // Return true on success, false otherwise.
-    // [main-thread] */
+    // [thread-safe] */
     //bool (*request_hide)(const clap_host_t *host);
     request_hide: function(host: Pclap_host): boolean; cdecl;
 
@@ -926,7 +982,7 @@ type
     //
     // If was_destroyed is true, then the host must call clap_plugin_gui->destroy() to acknowledge
     // the gui destruction.
-    // [main-thread]
+    // [thread-safe] */
     //void (*closed)(const clap_host_t *host, bool was_destroyed);
     closed: procedure(host: Pclap_host; was_destroyed: boolean); cdecl;
   end;
@@ -1022,6 +1078,10 @@ type
 
 /// This extension provides a way for the plugin to describe its current audio ports.
 ///
+/// If the plugin does not implement this extension, it won't have audio ports.
+///
+/// 32 bits support is required for both host and plugins. 64 bits audio is optional.
+///
 /// If the plugin does not implement this extension, it will have a default 32 bits stereo input and
 /// output. This makes 32 bit support a requirement for both plugin and host.
 ///
@@ -1037,8 +1097,11 @@ const
   // Main port must be at index 0.
   CLAP_AUDIO_PORT_IS_MAIN = 1 shl 0;
 
+  // The port can be used with 64 bits audio
+  CLAP_AUDIO_PORT_SUPPORTS_64BITS = 1 shl 1;
+
   // The prefers 64 bits audio with this port.
-  CLAP_AUDIO_PORTS_PREFERS_64BITS = 1 shl 1;
+  CLAP_AUDIO_PORTS_PREFERS_64BITS = 1 shl 2;
 
 type
   Tclap_audio_port_info = record
@@ -1122,7 +1185,7 @@ type
 ///
 /// This extension provides a way for the plugin to describe its current note ports.
 ///
-/// If the plugin does not implement this extension, it will have a single note input and output.
+/// If the plugin does not implement this extension, it won't have note input or output.
 ///
 /// The plugin is only allowed to change its note ports configuration while it is deactivated.
 
@@ -1136,7 +1199,7 @@ const
    // Uses clap_event_midi, no polyphonic expression
   CLAP_NOTE_DIALECT_MIDI = 1 shl 1;
 
-   // Uses clap_event_midi, with polyphonic expression
+   // Uses clap_event_midi, with polyphonic expression (MPE)
   CLAP_NOTE_DIALECT_MIDI_MPE = 1 shl 2;
 
    // Uses clap_event_midi2
@@ -1211,9 +1274,8 @@ type
 ///
 /// When the plugin changes a parameter value, it must inform the host.
 /// It will send @ref CLAP_EVENT_PARAM_VALUE event during process() or flush().
-/// - set the flag CLAP_EVENT_BEGIN_ADJUST to mark the begining of automation recording
-/// - set the flag CLAP_EVENT_END_ADJUST to mark the end of automation recording
-/// - set the flag CLAP_EVENT_SHOULD_RECORD if the event should be recorded
+/// If the user is adjusting the value, don't forget to mark the begining and end
+/// of the gesture by send CLAP_EVENT_PARAM_GESTURE_BEGIN and CLAP_EVENT_PARAM_GESTURE_END events.
 ///
 /// @note MIDI CCs are a tricky because you may not know when the parameter adjustment ends.
 /// Also if the hosts records incoming MIDI CC and parameter change automation at the same time,
@@ -1221,9 +1283,9 @@ type
 /// The parameter automation will always target the same parameter because the param_id is stable.
 /// The MIDI CC may have a different mapping in the future and may result in a different playback.
 ///
-/// When a MIDI CC changes a parameter's value, set @ref clap_event_param.should_record to false.
-/// That way the host may record the MIDI CC automation, but not the parameter change and there
-/// won't be conflict at playback.
+/// When a MIDI CC changes a parameter's value, set the flag CLAP_EVENT_DONT_RECORD in
+/// clap_event_param.header.flags. That way the host may record the MIDI CC automation, but not the
+/// parameter change and there won't be conflict at playback.
 ///
 /// Scenarios:
 ///
@@ -1271,40 +1333,21 @@ const
   // if so the double value is converted to integer using a cast (equivalent to trunc).
   CLAP_PARAM_IS_STEPPED = 1 shl 0;
 
-  // Does this param supports per note automations?
-  CLAP_PARAM_IS_PER_NOTE = 1 shl 1;
-
-  // Does this param supports per channel automations?
-  CLAP_PARAM_IS_PER_CHANNEL = 1 shl 2;
-
-  // Does this param supports per port automations?
-  CLAP_PARAM_IS_PER_PORT = 1 shl 3;
-
   // Useful for for periodic parameters like a phase
-  CLAP_PARAM_IS_PERIODIC = 1 shl 4;
+  CLAP_PARAM_IS_PERIODIC = 1 shl 1;
 
   // The parameter should not be shown to the user, because it is currently not used.
   // It is not necessary to process automation for this parameter.
-  CLAP_PARAM_IS_HIDDEN = 1 shl 5;
+  CLAP_PARAM_IS_HIDDEN = 1 shl 2;
+
+  // The parameter can't be changed by the host.
+  CLAP_PARAM_IS_READONLY = 1 shl 3;
 
   // This parameter is used to merge the plugin and host bypass button.
   // It implies that the parameter is stepped.
   // min: 0 -> bypass off
   // max: 1 -> bypass on
-  CLAP_PARAM_IS_BYPASS = 1 shl 6;
-
-  // The parameter can't be changed by the host.
-  CLAP_PARAM_IS_READONLY = 1 shl 7;
-
-  // Does the parameter support the modulation signal?
-  CLAP_PARAM_IS_MODULATABLE = 1 shl 8;
-
-  // Any change to this parameter will affect the plugin output and requires to be done via
-  // process() if the plugin is active.
-  //
-  // A simple example would be a DC Offset, changing it will change the output signal and must be
-  // processed.
-  CLAP_PARAM_REQUIRES_PROCESS = 1 shl 9;
+  CLAP_PARAM_IS_BYPASS = 1 shl 4;
 
   // When set:
   // - automation can be recorded
@@ -1315,7 +1358,35 @@ const
   // If this parameters affect the internal processing structure of the plugin, ie: max delay, fft
   // size, ... and the plugins needs to re-allocate its working buffers, then it should call
   // host->request_restart(), and perform the change once the plugin is re-activated.
-  CLAP_PARAM_IS_AUTOMATABLE = 1 shl 10;
+  CLAP_PARAM_IS_AUTOMATABLE = 1 shl 5;
+
+  // Does this param supports per note automations?
+  CLAP_PARAM_IS_AUTOMATABLE_PER_NOTE = 1 shl 6;
+
+  // Does this param supports per channel automations?
+  CLAP_PARAM_IS_AUTOMATABLE_PER_CHANNEL = 1 shl 7;
+
+  // Does this param supports per port automations?
+  CLAP_PARAM_IS_AUTOMATABLE_PER_PORT = 1 shl 8;
+
+  // Does the parameter support the modulation signal?
+  CLAP_PARAM_IS_MODULATABLE = 1 shl 9;
+
+  // Does this param supports per note automations?
+  CLAP_PARAM_IS_MODULATABLE_PER_NOTE = 1 shl 10;
+
+  // Does this param supports per channel automations?
+  CLAP_PARAM_IS_MODULATABLE_PER_CHANNEL = 1 shl 11;
+
+  // Does this param supports per channel automations?
+  CLAP_PARAM_IS_MODULATABLE_PER_PORT = 1 shl 12;
+
+  // Any change to this parameter will affect the plugin output and requires to be done via
+  // process() if the plugin is active.
+  //
+  // A simple example would be a DC Offset, changing it will change the output signal and must be
+  // processed.
+  CLAP_PARAM_REQUIRES_PROCESS = 1 shl 13;
 
 type
   Tclap_param_info_flags = uint32_t;
@@ -1570,6 +1641,29 @@ type
   Pclap_host_latency = ^Tclap_host_latency;
 
 
+//ext\tail.h
+
+const
+  CLAP_EXT_TAIL = AnsiString('clap.tail');
+
+type
+  Tclap_plugin_tail = record
+    // Returns tail length in samples.
+    // [main-thread,audio-thread]
+    //uint32_t (*get)(const clap_plugin_t *plugin);
+    get: function(plugin: Pclap_plugin): uint32_t; cdecl;
+  end;
+  Pclap_plugin_tail = ^Tclap_plugin_tail;
+
+  Tclap_host_tail = record
+    // Tell the host that the tail has changed.
+    // [audio-thread]
+    //void (*changed)(const clap_host_t *host);
+    changed: procedure(host: Pclap_host); cdecl;
+  end;
+  Pclap_host_tail = ^Tclap_host_tail;
+
+
 //ext\render.h
 
 const
@@ -1629,7 +1723,7 @@ type
 
 //converters\vst2-converter.h
 
-// This interface provide all the tool to convert a vst2 plugin instance into a clap plugin instance
+// This interface provides all the tools to convert a vst2 plugin instance into a clap plugin instance.
 type
   Pclap_vst2_converter = ^Tclap_vst2_converter;
   Tclap_vst2_converter = record
@@ -1685,7 +1779,7 @@ type
 
 //converters\vst3-converter.h
 
-// This interface provide all the tool to convert a vst3 plugin instance into a clap plugin instance
+// This interface provides all the tools to convert a vst3 plugin instance into a clap plugin instance.
 type
   Pclap_vst3_converter = ^Tclap_vst3_converter;
   Tclap_vst3_converter = record
