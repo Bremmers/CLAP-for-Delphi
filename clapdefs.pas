@@ -29,8 +29,8 @@ type
 
 const
   CLAP_VERSION_MAJOR = 0;
-  CLAP_VERSION_MINOR = 24;
-  CLAP_VERSION_REVISION = 1;
+  CLAP_VERSION_MINOR = 25;
+  CLAP_VERSION_REVISION = 0;
 
   CLAP_VERSION: Tclap_version = (
     major: CLAP_VERSION_MAJOR;
@@ -192,9 +192,10 @@ type
   Tclap_event_note = record
     header: Tclap_event_header;
 
+    note_id: int32_t;  // -1 if unspecified, otherwise >0
     port_index: int16_t;
-    key: int16_t;     // 0..127
     channel: int16_t; // 0..15
+    key: int16_t;     // 0..127
     velocity: double; // 0..1
   end;
 
@@ -222,10 +223,11 @@ type
 
     expression_id: Tclap_note_expression;
 
-    // target a specific port, key and channel, -1 for global
+    // target a note_id, specific port, key and channel, -1 for global
+    note_id: int32_t;
     port_index: int16_t;
-    key: int16_t;
     channel: int16_t;
+    key: int16_t;
 
     value: double; // see expression for the range
   end;
@@ -237,10 +239,11 @@ type
     param_id: Tclap_id; // @ref clap_param_info.id
     cookie: pointer;    // @ref clap_param_info.cookie
 
-    // target a specific port, key and channel, -1 for global
+    // target a note_id, specific port, key and channel, -1 for global
+    note_id: int32_t;
     port_index: int16_t;
-    key: int16_t;
     channel: int16_t;
+    key: int16_t;
 
     value: double;
   end;
@@ -252,10 +255,11 @@ type
 //   alignas(4) clap_id param_id; // @ref clap_param_info.id
 //   void *cookie;                // @ref clap_param_info.cookie
 //
-//   // target a specific port, key and channel, -1 for global
-//   alignas(2) int16_t port_index;
-//   alignas(2) int16_t key;
-//   alignas(2) int16_t channel;
+//   // target a specific note_id, port, key and channel, -1 for global
+//   int32_t note_id;
+//   int16_t port_index;
+//   int16_t channel;
+//   int16_t key;
 //
 //   alignas(8) double amount; // modulation amount
 //} clap_event_param_mod_t;
@@ -1361,25 +1365,31 @@ const
   CLAP_PARAM_IS_AUTOMATABLE = 1 shl 5;
 
   // Does this param supports per note automations?
-  CLAP_PARAM_IS_AUTOMATABLE_PER_NOTE = 1 shl 6;
-
-  // Does this param supports per channel automations?
-  CLAP_PARAM_IS_AUTOMATABLE_PER_CHANNEL = 1 shl 7;
-
-  // Does this param supports per port automations?
-  CLAP_PARAM_IS_AUTOMATABLE_PER_PORT = 1 shl 8;
-
-  // Does the parameter support the modulation signal?
-  CLAP_PARAM_IS_MODULATABLE = 1 shl 9;
+  CLAP_PARAM_IS_AUTOMATABLE_PER_NOTE_ID = 1 shl 6;
 
   // Does this param supports per note automations?
-  CLAP_PARAM_IS_MODULATABLE_PER_NOTE = 1 shl 10;
+  CLAP_PARAM_IS_AUTOMATABLE_PER_KEY = 1 shl 7;
 
   // Does this param supports per channel automations?
-  CLAP_PARAM_IS_MODULATABLE_PER_CHANNEL = 1 shl 11;
+  CLAP_PARAM_IS_AUTOMATABLE_PER_CHANNEL = 1 shl 8;
+
+  // Does this param supports per port automations?
+  CLAP_PARAM_IS_AUTOMATABLE_PER_PORT = 1 shl 9;
+
+  // Does the parameter support the modulation signal?
+  CLAP_PARAM_IS_MODULATABLE = 1 shl 10;
+
+  // Does this param supports per note automations?
+  CLAP_PARAM_IS_MODULATABLE_PER_NOTE_ID = 1 shl 11;
+
+   // Does this param supports per note automations?
+   CLAP_PARAM_IS_MODULATABLE_PER_KEY = 1 shl 12;
 
   // Does this param supports per channel automations?
-  CLAP_PARAM_IS_MODULATABLE_PER_PORT = 1 shl 12;
+  CLAP_PARAM_IS_MODULATABLE_PER_CHANNEL = 1 shl 13;
+
+  // Does this param supports per channel automations?
+  CLAP_PARAM_IS_MODULATABLE_PER_PORT = 1 shl 14;
 
   // Any change to this parameter will affect the plugin output and requires to be done via
   // process() if the plugin is active.
