@@ -29,7 +29,7 @@ type
 
 const
   CLAP_VERSION_MAJOR = 0;
-  CLAP_VERSION_MINOR = 25;
+  CLAP_VERSION_MINOR = 26;
   CLAP_VERSION_REVISION = 0;
 
   CLAP_VERSION: Tclap_version = (
@@ -46,10 +46,14 @@ function clap_version_is_compatible(const v: Tclap_version): boolean; inline;
 //string-sizes.h
 
 const
+  // String capacity for names that can be displayed to the user.
   CLAP_NAME_SIZE = 256;
-  CLAP_MODULE_SIZE = 512;
-  CLAP_KEYWORDS_SIZE = 256;
-  CLAP_PATH_SIZE = 4096;
+  // String capacity for describing a path, like a parameter in a module hierarchy or path within a
+  // set of nested track groups.
+  //
+  // This is not suited for describing a file path on the disk, as NTFS allows up to 32K long
+  // paths.
+  CLAP_PATH_SIZE = 1024;
 
 
 //id.h
@@ -85,7 +89,7 @@ type
 type
   Tclap_event_header = record
     size: uint32_t;      // event size including this header, eg: sizeof (clap_event_note)
-    time: uint32_t;      // time at which the event happens
+    time: uint32_t;      // sample offset within the buffer for this event
     space_id: uint16_t;  // event space, see clap_host_event_registry
     &type: uint16_t;     // event type
     flags: uint32_t;     // see clap_event_flags
@@ -96,8 +100,8 @@ type
 const
   CLAP_CORE_EVENT_SPACE_ID = 0;
 
-//enum clap_event_flags {
-  // indicate a live momentary event
+  // Indicate a live user event, for example a user turning a phisical knob
+  // or playing a physical key.
   CLAP_EVENT_IS_LIVE = 1 shl 0;
 
   // indicate that the event should not be recorded.
@@ -118,16 +122,21 @@ const
 //
 // The plugins are encouraged to be able to handle note events encoded as raw midi or midi2,
 // or implement clap_plugin_event_filter and reject raw midi and midi2 events.
-//enum {
+
   // NOTE_ON and NOTE_OFF represents a key pressed and key released event.
+  // A NOTE_ON with a velocity of 0 is valid and should not be interpreted as a NOTE_OFF.
   //
   // NOTE_CHOKE is meant to choke the voice(s), like in a drum machine when a closed hihat
-  // chokes an open hihat.
+  // chokes an open hihat. This event can be sent by the host to the plugin. Here two use case:
+  // - a plugin is inside a drum pad in Bitwig Studio's drum machine, and this pad is choked by
+  //   another one
+  // - the user double clicks the DAW's stop button in the transport which then stops the sound on
+  //   every tracks
   //
   // NOTE_END is sent by the plugin to the host. The port, channel and key are those given
   // by the host in the NOTE_ON event. In other words, this event is matched against the
-  // plugin's note input port. NOTE_END is only requiered if the plugin marked at least
-  // one of its parameters as polyphonic.
+  // plugin's note input port.
+  // NOTE_END is useful to help the host to match the plugin's voice life time.
   //
   // When using polyphonic modulations, the host has to allocate and release voices for its
   // polyphonic modulator. Yet only the plugin effectively knows when the host should terminate
@@ -170,8 +179,10 @@ const
   CLAP_EVENT_PARAM_VALUE = 5;
   CLAP_EVENT_PARAM_MOD = 6;
 
-  // uses clap_event_param_gesture
-  // Indicates that a parameter gesture begun or ended.
+  // Indicates that the user started or finished to adjust a knob.
+  // This is not mandatory to wrap parameter changes with gesture events, but this improves a lot
+  // the user experience when recording automation or overriding automation playback.
+  // Uses clap_event_param_gesture.
   CLAP_EVENT_PARAM_GESTURE_BEGIN = 7;
   CLAP_EVENT_PARAM_GESTURE_END = 8;
 
@@ -183,16 +194,14 @@ const
 type
   Tclap_event_type = int32_t;
 
-//
 // Note on, off, end and choke events.
 // In the case of note choke or end events:
 // - the velocity is ignored.
 // - key and channel are used to match active notes, a value of -1 matches all.
-//
   Tclap_event_note = record
     header: Tclap_event_header;
 
-    note_id: int32_t;  // -1 if unspecified, otherwise >0
+    note_id: int32_t;  // -1 if unspecified, otherwise >=0
     port_index: int16_t;
     channel: int16_t; // 0..15
     key: int16_t;     // 0..127
@@ -223,7 +232,7 @@ type
 
     expression_id: Tclap_note_expression;
 
-    // target a note_id, specific port, key and channel, -1 for global
+    // target a specific note_id, port, key and channel, -1 for global
     note_id: int32_t;
     port_index: int16_t;
     channel: int16_t;
@@ -239,7 +248,7 @@ type
     param_id: Tclap_id; // @ref clap_param_info.id
     cookie: pointer;    // @ref clap_param_info.cookie
 
-    // target a note_id, specific port, key and channel, -1 for global
+    // target a specific note_id, port, key and channel, -1 for global
     note_id: int32_t;
     port_index: int16_t;
     channel: int16_t;
@@ -248,21 +257,21 @@ type
     value: double;
   end;
 
-//typedef struct clap_event_param_mod {
-//   alignas(4) clap_event_header_t header;
-//
-//   // target parameter
-//   alignas(4) clap_id param_id; // @ref clap_param_info.id
-//   void *cookie;                // @ref clap_param_info.cookie
-//
-//   // target a specific note_id, port, key and channel, -1 for global
-//   int32_t note_id;
-//   int16_t port_index;
-//   int16_t channel;
-//   int16_t key;
-//
-//   alignas(8) double amount; // modulation amount
-//} clap_event_param_mod_t;
+  Tclap_event_param_mod = record
+    header: Tclap_event_header;
+
+    // target parameter
+    param_id: Tclap_id; // @ref clap_param_info.id
+    cookie: pointer;    // @ref clap_param_info.cookie
+
+    // target a specific note_id, port, key and channel, -1 for global
+    note_id: int32_t;
+    port_index: int16_t;
+    channel: int16_t;
+    key: int16_t;
+
+    amount: double; // modulation amount
+  end;
 
   Tclap_event_param_gesture = record
     header: Tclap_event_header;
@@ -271,7 +280,6 @@ type
     param_id: Tclap_id; // @ref clap_param_info.id
   end; 
 
-//enum clap_transport_flags {
 const
   CLAP_TRANSPORT_HAS_TEMPO = 1 shl 0;
   CLAP_TRANSPORT_HAS_BEATS_TIMELINE = 1 shl 1;
@@ -303,8 +311,8 @@ type
     bar_start: Tclap_beattime; // start pos of the current bar
     bar_number: int32_t;       // bar at song pos 0 has the number 0
 
-    tsig_num: int16_t;   // time signature numerator
-    tsig_denom: int16_t; // time signature denominator
+    tsig_num: uint16_t;   // time signature numerator
+    tsig_denom: uint16_t; // time signature denominator
   end;
   Pclap_event_transport = ^Tclap_event_transport;
 
@@ -340,7 +348,7 @@ type
     //uint32_t (*size)(const struct clap_input_events *list);
     size: function(list: Pclap_input_events): uint32_t; cdecl;
 
-    // Don't free the return event, it belongs to the list
+    // Don't free the returned event, it belongs to the list
     //const clap_event_header_t *(*get)(const struct clap_input_events *list, uint32_t index);
     get: function(list: Pclap_input_events; index: uint32_t): Pclap_event_header; cdecl;
   end;
@@ -366,8 +374,8 @@ type
 // bool isRightConstant = (buffer->constant_mask & (1 << 1)) != 0;
 //
 // for (int i = 0; i < N; ++i) {
-//    float l = data32[0][i * isLeftConstant];
-//    float r = data32[1][i * isRightConstant];
+//    float l = data32[0][isLeftConstant ? 0 : i];
+//    float r = data32[1][isRightConstant ? 0 : i];
 // }
 //
 // Note: checking the constant mask is optional, and this implies that
@@ -383,7 +391,7 @@ type
     data64: PPointerArray;
     channel_count: uint32_t;
     latency: uint32_t;       // latency from/to the audio interface
-    constant_mask: uint64_t; // mask & (1 << N) to test if channel N is constant
+    constant_mask: uint64_t;
   end;
 
 
@@ -429,9 +437,6 @@ type
     // Audio buffers, they must have the same count as specified
     // by clap_plugin_audio_ports->get_count().
     // The index maps to clap_plugin_audio_ports->get_info().
-    //
-    // If a plugin does not implement clap_plugin_audio_ports,
-    // then it gets a default stereo input and output.
     audio_inputs: pointer { Pclap_audio_buffer_t };
     audio_outputs: pointer { Pclap_audio_buffer_t };
     audio_inputs_count: uint32_t;
@@ -441,9 +446,6 @@ type
     //
     // Events must be sorted by time.
     // The input event list can't be modified.
-    //
-    // If a plugin does not implement clap_plugin_note_ports,
-    // then it gets a default note input and output.
     in_events: Pclap_input_events;
     out_events: Pclap_output_events;
   end;
@@ -462,7 +464,7 @@ type
     name: PAnsiChar;    // eg: "Bitwig Studio"
     vendor: PAnsiChar;  // eg: "Bitwig GmbH"
     url: PAnsiChar;     // eg: "https://bitwig.com"
-    version: PAnsiChar; // eg: "3.3.8"
+    version: PAnsiChar; // eg: "4.3"
 
     // Query an extension.
     // [thread-safe]
@@ -497,8 +499,10 @@ type
   Tclap_plugin_descriptor = record
     clap_version: Tclap_version; // initialized to CLAP_VERSION
 
-    id: PAnsiChar;          // eg: "com.u-he.diva"
-    name: PAnsiChar;        // eg: "Diva"
+    // Mandatory fields must be set and must not be blank.
+    // Otherwise the fields can be null or blank, though it is safer to make them blank.
+    id: PAnsiChar;          // eg: "com.u-he.diva, mandatory"
+    name: PAnsiChar;        // eg: "Diva", mandatory
     vendor: PAnsiChar;      // eg: "u-he"
     url: PAnsiChar;         // eg: "https://u-he.com/products/diva/"
     manual_url: PAnsiChar;  // eg: "https://dl.u-he.com/manuals/plugins/diva/Diva-user-guide.pdf"
@@ -507,27 +511,9 @@ type
     description: PAnsiChar; // eg: "The spirit of analogue"
 
     // Arbitrary list of keywords.
-    // They can be matched by the host search engine and used to classify the plugin.
-    //
+    // They can be matched by the host indexer and used to classify the plugin.
     // The array of pointers must be null terminated.
-    //
-    // Some pre-defined keywords:
-    // - "instrument", "audio_effect", "note_effect", "analyzer"
-    // - "mono", "stereo", "surround", "ambisonic"
-    // - "distortion", "compressor", "limiter", "transient"
-    // - "equalizer", "filter", "de-esser"
-    // - "delay", "reverb", "chorus", "flanger"
-    // - "tool", "utility", "glitch"
-    //
-    // - "win32-dpi-aware" informs the host that this plugin is dpi-aware on Windows
-    //
-    // Some examples:
-    // "equalizer;analyzer;stereo;mono"
-    // "compressor;analog;character;mono"
-    // "reverb;plate;stereo"
-    // "reverb;spring;surround"
-    // "kick;analog;808;roland;drum;mono;instrument"
-    // "instrument;chiptune;gameboy;nintendo;sega;mono"
+    // For some standard features see plugin-features.h
     features: PPAnsiCharArray;
   end;
   Pclap_plugin_descriptor = ^Tclap_plugin_descriptor;
@@ -582,7 +568,7 @@ type
     //
     // [audio-thread & active_state]
     //void (*reset)(const struct clap_plugin *plugin);
-	reset: procedure(plugin: Pclap_plugin); cdecl;
+	  reset: procedure(plugin: Pclap_plugin); cdecl;
 
     // process audio, events, ...
     // [audio-thread & active_state & processing_state]
@@ -603,6 +589,73 @@ type
   end;
 
 
+//plugin-features.h
+
+// This files provides a set of standard plugin features meant to be use
+// within clap_plugin_descriptor.features.
+//
+// For practical reasons we'll avoid spaces and use `-` instead to facilitate
+// scripts that generate the feature array.
+//
+// Non standard feature should be formated as follow: "$namespace:$feature"
+
+const
+
+/////////////////////
+// Plugin category //
+/////////////////////
+
+// Add this feature if your plugin can process note events and then produce audio
+  CLAP_PLUGIN_FEATURE_INSTRUMENT = 'instrument';
+
+// Add this feature if your plugin is an audio effect
+  CLAP_PLUGIN_FEATURE_AUDIO_EFFECT = 'audio-effect';
+
+// Add this feature if your plugin is a note effect or a note generator/sequencer
+  CLAP_PLUGIN_FEATURE_NOTE_EFFECT = 'note-effect';
+
+// Add this feature if your plugin is an analyzer
+  CLAP_PLUGIN_FEATURE_ANALYZER = 'analyzer';
+
+/////////////////////////
+// Plugin sub-category //
+/////////////////////////
+
+  CLAP_PLUGIN_FEATURE_FILTER = 'filter';
+  CLAP_PLUGIN_FEATURE_PHASER = 'phaser';
+  CLAP_PLUGIN_FEATURE_EQUALIZER = 'equalizer';
+  CLAP_PLUGIN_FEATURE_DEESSER = 'de-esser';
+
+  CLAP_PLUGIN_FEATURE_DISTORTION = 'distortion';
+  CLAP_PLUGIN_FEATURE_TRANSIENT_SHAPER = 'transient-shaper';
+  CLAP_PLUGIN_FEATURE_COMPRESSOR = 'compressor';
+  CLAP_PLUGIN_FEATURE_LIMITER = 'limiter';
+
+  CLAP_PLUGIN_FEATURE_FLANGER = 'flanger';
+  CLAP_PLUGIN_FEATURE_CHORUS = 'chorus';
+  CLAP_PLUGIN_FEATURE_DELAY = 'delay';
+  CLAP_PLUGIN_FEATURE_REVERB = 'reverb';
+
+  CLAP_PLUGIN_FEATURE_UTILITY = 'utility';
+  CLAP_PLUGIN_FEATURE_GLITCH = 'glitch';
+
+////////////////////////
+// Audio Capabilities //
+////////////////////////
+
+  CLAP_PLUGIN_FEATURE_MONO = 'mono';
+  CLAP_PLUGIN_FEATURE_STEREO = 'stereo';
+  CLAP_PLUGIN_FEATURE_SURROUND = 'surround';
+  CLAP_PLUGIN_FEATURE_AMBISONIC = 'ambisonic';
+
+/////////////////
+// GUI related //
+/////////////////
+
+// Add this feature if the plugin is DPI aware on Windows.
+  CLAP_PLUGIN_FEATURE_WIN32_DPI_AWARE = 'win32-dpi-aware';
+
+
 //plugin-factory.h
 
 const
@@ -615,24 +668,24 @@ type
 //
 // If the content of the factory may change due to external events, like the user installed
   Tclap_plugin_factory = record
-   { Get the number of plugins available.
-    * [thread-safe] }
+    // Get the number of plugins available.
+    // [thread-safe]
     //uint32_t (*get_plugin_count)(const struct clap_plugin_factory *factory);
     get_plugin_count: function(factory: Pclap_plugin_factory): uint32_t; cdecl;
 
-   { Retrieves a plugin descriptor by its index.
-    * Returns null in case of error.
-    * The descriptor must not be freed.
-    * [thread-safe] }
+    // Retrieves a plugin descriptor by its index.
+    // Returns null in case of error.
+    // The descriptor must not be freed.
+    // [thread-safe]
     //const clap_plugin_descriptor_t *(*get_plugin_descriptor)(
     //  const struct clap_plugin_factory *factory, uint32_t index);
     get_plugin_descriptor: function(factory: Pclap_plugin_factory; index: uint32_t): Pclap_plugin_descriptor; cdecl;
 
-   { Create a clap_plugin by its plugin_id.
-    * The returned pointer must be freed by calling plugin->destroy(plugin);
-    * The plugin is not allowed to use the host callbacks in the create method.
-    * Returns null in case of error.
-    * [thread-safe] }
+    // Create a clap_plugin by its plugin_id.
+    // The returned pointer must be freed by calling plugin->destroy(plugin);
+    // The plugin is not allowed to use the host callbacks in the create method.
+    // Returns null in case of error.
+    // [thread-safe]
     //const clap_plugin_t *(*create_plugin)(const struct clap_plugin_factory *factory,
     //                                      const clap_host_t                *host,
     //                                      const char                       *plugin_id);
@@ -654,7 +707,7 @@ type
   Pclap_plugin_invalidation_source = ^Tclap_plugin_invalidation_source;
 
 const
-  CLAP_PLUGIN_INVALIDATION_FACTORY_ID = AnsiString('clap.plugin-invalidation-factory');
+  CLAP_PLUGIN_INVALIDATION_FACTORY_ID = AnsiString('clap.plugin-invalidation-factory/draft0');
 
 // Used to figure out when a plugin needs to be scanned again.
 // Imagine a situation with a single entry point: my-plugin.clap which then scans itself
@@ -706,7 +759,7 @@ type
   Tclap_plugin_entry = record
     clap_version: Tclap_version;     // initialized to CLAP_VERSION
 
-    // This function must be called fist, and can only be called once.
+    // This function must be called first, and can only be called once.
     //
     // It should be as fast as possible, in order to perform very quick scan of the plugin
     // descriptors.
@@ -745,9 +798,7 @@ type
   Tclap_istream = record
     ctx: TObject; // reserved pointer for the stream
 
-    {* returns the number of bytes read.
-    * 0 for end of file.
-    * -1 on error. */}
+    // returns the number of bytes read; 0 indicates end of file and -1 a read error
     //int64_t (*read)(const struct clap_istream *stream, void *buffer, uint64_t size);
     read: function(stream: Pclap_istream; buffer: pointer; size: uint64_t): int64_t; cdecl;
   end;
@@ -756,8 +807,7 @@ type
   Tclap_ostream = record
     ctx: TObject; // reserved pointer for the stream
 
-    // returns the number of bytes written.
-    // -1 on error. */}
+    // returns the number of bytes written; -1 on write error
     //int64_t (*write)(const struct clap_ostream *stream, const void *buffer, uint64_t size);
     write: function(stream: Pclap_ostream; buffer: pointer; size: uint64_t): int64_t; cdecl;
   end;
@@ -843,6 +893,9 @@ type
 
 // Information to improve window resizement when initiated by the host or window manager.
   Tclap_gui_resize_hints = record
+    can_resize_horizontally: boolean;
+    can_resize_vertically: boolean;
+    // only if can resize horizontally and vertically
     preseve_aspect_ratio: boolean;
     aspect_ratio_width: uint32_t;
     aspect_ratio_height: uint32_t;
@@ -893,7 +946,7 @@ type
     //bool (*set_scale)(const clap_plugin_t *plugin, double scale);
     set_scale: function(plugin: Pclap_plugin; scale: double): boolean; cdecl;
 
-    // Get the current size of the plugin UI, with the scaling applied.
+    // Get the current size of the plugin UI.
     // clap_plugin_gui->create() must have been called prior to asking the size.
     // [main-thread]
     //bool (*get_size)(const clap_plugin_t *plugin, uint32_t *width, uint32_t *height);
@@ -935,7 +988,7 @@ type
     set_transient: function(plugin: Pclap_plugin; window: Pclap_window): boolean; cdecl;
 
     // Suggests a window title. Only for floating windows.
-    // [main-thread]
+    // [main-thread & floating]
     //void (*suggest_title)(const clap_plugin_t *plugin, const char *title);
     suggest_title: procedure(plugin: Pclap_plugin; title: PAnsiChar); cdecl;
 
@@ -1086,9 +1139,6 @@ type
 ///
 /// 32 bits support is required for both host and plugins. 64 bits audio is optional.
 ///
-/// If the plugin does not implement this extension, it will have a default 32 bits stereo input and
-/// output. This makes 32 bit support a requirement for both plugin and host.
-///
 /// The plugin is only allowed to change its ports configuration while it is deactivated.
 
 const
@@ -1104,9 +1154,13 @@ const
   // The port can be used with 64 bits audio
   CLAP_AUDIO_PORT_SUPPORTS_64BITS = 1 shl 1;
 
-  // The prefers 64 bits audio with this port.
+  // 64 bits audio is preferred with this port
   CLAP_AUDIO_PORTS_PREFERS_64BITS = 1 shl 2;
 
+   // This port must be used with the same sample size as all the other ports which have this flags.
+   // In other words if all ports have this flags then the plugin may either be used entirely with
+   // 64 bits audio or 32 bits audio, but it can't be mixed.
+   CLAP_AUDIO_PORT_REQUIRES_COMMON_SAMPLE_SIZE = 1 shl 3;
 type
   Tclap_audio_port_info = record
     id: Tclap_id;                // stable identifier
@@ -1177,6 +1231,8 @@ type
     is_rescan_flag_supported: function(host: Pclap_host; flag: uint32_t): boolean;
 
     // Rescan the full list of audio ports according to the flags.
+    // It is illegal to ask the host to rescan with a flag that is not supported.
+    // Certain flags require the plugin to be de-activated.
     // [main-thread,!active]
     //void (*rescan)(const clap_host_t *host, uint32_t flags);
     rescan: procedure(host: Pclap_host; flags: uint32_t); cdecl;
@@ -1188,16 +1244,13 @@ type
 /// @page Note Ports
 ///
 /// This extension provides a way for the plugin to describe its current note ports.
-///
 /// If the plugin does not implement this extension, it won't have note input or output.
-///
 /// The plugin is only allowed to change its note ports configuration while it is deactivated.
 
 const
   CLAP_EXT_NOTE_PORTS = AnsiString('clap.note-ports');
 
    // Uses clap_event_note and clap_event_note_expression.
-   // Default if the port info are not provided or inspected.
   CLAP_NOTE_DIALECT_CLAP = 1 shl 0;
 
    // Uses clap_event_midi, no polyphonic expression
@@ -1214,7 +1267,7 @@ type
     id: Tclap_id;                 // stable identifier
     supported_dialects: uint32_t; // bitfield, see clap_note_dialect
     preferred_dialect: uint32_t;  // one value of clap_note_dialect
-    name: array[0..CLAP_NAME_SIZE - 1] of byte;        // displayable name, i18n?
+    name: array[0..CLAP_NAME_SIZE - 1] of byte; // displayable name, i18n?
   end;
 
 // The note ports scan has to be done while the plugin is deactivated.
@@ -1382,8 +1435,8 @@ const
   // Does this param supports per note automations?
   CLAP_PARAM_IS_MODULATABLE_PER_NOTE_ID = 1 shl 11;
 
-   // Does this param supports per note automations?
-   CLAP_PARAM_IS_MODULATABLE_PER_KEY = 1 shl 12;
+  // Does this param supports per note automations?
+  CLAP_PARAM_IS_MODULATABLE_PER_KEY = 1 shl 12;
 
   // Does this param supports per channel automations?
   CLAP_PARAM_IS_MODULATABLE_PER_CHANNEL = 1 shl 13;
@@ -1396,12 +1449,12 @@ const
   //
   // A simple example would be a DC Offset, changing it will change the output signal and must be
   // processed.
-  CLAP_PARAM_REQUIRES_PROCESS = 1 shl 13;
+  CLAP_PARAM_REQUIRES_PROCESS = 1 shl 15;
 
 type
   Tclap_param_info_flags = uint32_t;
 
-/////* This describes a parameter */
+///* This describes a parameter */
   Tclap_param_info = record
     // stable parameter identifier, it must never change.
     id: Tclap_id;
@@ -1421,10 +1474,10 @@ type
     // destroyed.
     cookie: pointer;
 
-    name: array[0..CLAP_NAME_SIZE - 1] of byte;     // the display name
-    module: array[0..CLAP_MODULE_SIZE - 1] of byte; // the module containing the param, eg:
-                                             // "oscillators/wt1"; '/' will be used as a
-                                             // separator to show a tree like structure.
+    name: array[0..CLAP_NAME_SIZE - 1] of byte;   // the display name
+    module: array[0..CLAP_PATH_SIZE - 1] of byte; // the module containing the param, eg:
+                                                  // "oscillators/wt1"; '/' will be used as a
+                                                  // separator to show a tree like structure.
 
     min_value: double;     // minimum plain value
     max_value: double;     // maximum plain value
@@ -1538,7 +1591,7 @@ type
     //void (*rescan)(const clap_host_t *host, clap_param_rescan_flags flags);
     rescan: procedure(host: Pclap_host; flags: Tclap_param_rescan_flags); cdecl;
 
-    // Clears references to a parameter
+    // Clears references to a parameter.
     // [main-thread]
     //void (*clear)(const clap_host_t *host, clap_id param_id, clap_param_clear_flags flags);
     clear: procedure(host: Pclap_host; param_id: Tclap_id; flags: Tclap_param_clear_flags); cdecl;
@@ -1559,37 +1612,6 @@ type
   Pclap_host_params = ^Tclap_host_params;
 
 
-//ext\event-filter.h
-
-const
-  CLAP_EXT_EVENT_FILTER = AnsiString('clap.event-filter');
-
-// This extension lets the host know which event types the plugin is interested
-// in.
-// The host will cache the set of accepted events before activating the plugin.
-// The set of accepted events can't change while the plugin is active.
-//
-// If this extension is not provided by the plugin, then all events are accepted.
-//
-// If CLAP_EVENT_TRANSPORT is not accepted, then clap_process.transport may be null.
-type
-  Tclap_plugin_event_filter = record
-    // Returns true if the plugin is interested in the given event type.
-    // [main-thread]
-    //bool (*accepts)(const clap_plugin_t *plugin, uint16_t space_id, uint16_t event_type);
-    accepts: function(plugin: Pclap_plugin; space_id: uint16_t; event_type: Tclap_event_type): boolean; cdecl;
-  end;
-  Pclap_plugin_event_filter = ^Tclap_plugin_event_filter;
-
-  Tclap_host_event_filter = record
-    // Informs the host that the set of accepted event type changed.
-    // This requires the plugin to be deactivated.
-    // [main-thread]
-    //void (*changed)(const clap_host_t *host);
-    changed: procedure(host: Pclap_host); cdecl;
-  end;
-
-
 //ext\note-name.h
 
 const
@@ -1598,9 +1620,9 @@ const
 type
   Tclap_note_name = record
     name: array[0..CLAP_NAME_SIZE - 1] of byte;
-    port: int16_t;
-    key: int16_t;
-    channel: int16_t; // -1 for every channels
+    port: int16_t;    // -1 for every port
+    key: int16_t;     // -1 for every key
+    channel: int16_t; // -1 for every channel
   end;
 
   Tclap_plugin_note_name = record
@@ -1659,6 +1681,7 @@ const
 type
   Tclap_plugin_tail = record
     // Returns tail length in samples.
+    // Any value greater or equal to INT32_MAX implies infinite tail.
     // [main-thread,audio-thread]
     //uint32_t (*get)(const clap_plugin_t *plugin);
     get: function(plugin: Pclap_plugin): uint32_t; cdecl;
@@ -1770,7 +1793,7 @@ type
 
 // Factory identifier
 const
-  CLAP_VST2_CONVERTER_FACTORY_ID = AnsiString('clap.vst2-converter-factory');
+  CLAP_VST2_CONVERTER_FACTORY_ID = AnsiString('clap.vst2-converter-factory/draft0');
 
 // List all the converters available in the current DSO.
 type
@@ -1828,7 +1851,7 @@ type
 
 // Factory identifier
 const
-  CLAP_VST3_CONVERTER_FACTORY_ID = AnsiString('clap.vst3-converter-factory');
+  CLAP_VST3_CONVERTER_FACTORY_ID = AnsiString('clap.vst3-converter-factory/draft0');
 
 // List all the converters available in the current DSO.
 type
