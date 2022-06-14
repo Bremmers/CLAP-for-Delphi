@@ -28,9 +28,9 @@ type
   end;
 
 const
-  CLAP_VERSION_MAJOR = 0;
-  CLAP_VERSION_MINOR = 26;
-  CLAP_VERSION_REVISION = 0;
+  CLAP_VERSION_MAJOR = 1;
+  CLAP_VERSION_MINOR = 0;
+  CLAP_VERSION_REVISION = 1;
 
   CLAP_VERSION: Tclap_version = (
     major: CLAP_VERSION_MAJOR;
@@ -38,8 +38,7 @@ const
     revision: CLAP_VERSION_REVISION;
   );
 
-// For version 0, we require the same minor version because
-// we may still break the ABI at this point
+// versions 0.x.y were used during development stage and aren't compatible
 function clap_version_is_compatible(const v: Tclap_version): boolean; inline;
 
 
@@ -192,8 +191,6 @@ const
   CLAP_EVENT_MIDI2 = 12;      // raw midi 2 event; clap_event_midi2
 
 type
-  Tclap_event_type = int32_t;
-
 // Note on, off, end and choke events.
 // In the case of note choke or end events:
 // - the velocity is ignored.
@@ -621,10 +618,19 @@ const
 // Plugin sub-category //
 /////////////////////////
 
+  CLAP_PLUGIN_FEATURE_SYNTHESIZER = 'synthesizer';
+  CLAP_PLUGIN_FEATURE_SAMPLER = 'sampler';
+  CLAP_PLUGIN_FEATURE_DRUM = 'drum'; // For single drum
+  CLAP_PLUGIN_FEATURE_DRUM_MACHINE = 'drum-machine';
+
   CLAP_PLUGIN_FEATURE_FILTER = 'filter';
   CLAP_PLUGIN_FEATURE_PHASER = 'phaser';
   CLAP_PLUGIN_FEATURE_EQUALIZER = 'equalizer';
   CLAP_PLUGIN_FEATURE_DEESSER = 'de-esser';
+  CLAP_PLUGIN_FEATURE_PHASE_VOCODER = 'phase-vocoder';
+  CLAP_PLUGIN_FEATURE_GRANULAR = 'granular';
+  CLAP_PLUGIN_FEATURE_FREQUENCY_SHIFTER = 'frequency-shifter';
+  CLAP_PLUGIN_FEATURE_PITCH_SHIFTER = 'pitch-shifter';
 
   CLAP_PLUGIN_FEATURE_DISTORTION = 'distortion';
   CLAP_PLUGIN_FEATURE_TRANSIENT_SHAPER = 'transient-shaper';
@@ -636,8 +642,17 @@ const
   CLAP_PLUGIN_FEATURE_DELAY = 'delay';
   CLAP_PLUGIN_FEATURE_REVERB = 'reverb';
 
-  CLAP_PLUGIN_FEATURE_UTILITY = 'utility';
+  CLAP_PLUGIN_FEATURE_TREMOLO = 'tremolo';
   CLAP_PLUGIN_FEATURE_GLITCH = 'glitch';
+
+  CLAP_PLUGIN_FEATURE_UTILITY = 'utility';
+  CLAP_PLUGIN_FEATURE_PITCH_CORRECTION = 'pitch-correction';
+  CLAP_PLUGIN_FEATURE_RESTORATION = 'restoration'; // repair the sound
+
+  CLAP_PLUGIN_FEATURE_MULTI_EFFECTS = 'multi-effects';
+
+  CLAP_PLUGIN_FEATURE_MIXING = 'mixing';
+  CLAP_PLUGIN_FEATURE_MASTERING = 'mastering';
 
 ////////////////////////
 // Audio Capabilities //
@@ -647,13 +662,6 @@ const
   CLAP_PLUGIN_FEATURE_STEREO = 'stereo';
   CLAP_PLUGIN_FEATURE_SURROUND = 'surround';
   CLAP_PLUGIN_FEATURE_AMBISONIC = 'ambisonic';
-
-/////////////////
-// GUI related //
-/////////////////
-
-// Add this feature if the plugin is DPI aware on Windows.
-  CLAP_PLUGIN_FEATURE_WIN32_DPI_AWARE = 'win32-dpi-aware';
 
 
 //plugin-factory.h
@@ -776,8 +784,7 @@ type
     //void (*deinit)(void);
     deinit: procedure; cdecl;
 
-    // Get the pointer to a factory.
-    // See plugin-factory.h, vst2-converter.h ...
+    // Get the pointer to a factory. See plugin-factory.h for an example.
     //
     // Returns null if the factory is not provided.
     // The returned pointer must *not* be freed by the caller.
@@ -833,7 +840,7 @@ type
 ///  4.    -> clap_plugin_gui->set_transient()
 ///  5.    -> clap_plugin_gui->suggest_title()
 ///  6. else
-///  7.    -> clap_plugin_gui->set_scale(), if the function pointer is provided by the plugin
+///  7.    -> clap_plugin_gui->set_scale()
 ///  8.    -> clap_plugin_gui->can_resize()
 ///  9.    -> if resizable and has known size from previous session, clap_plugin_gui->set_size()
 /// 10.    -> else clap_plugin_gui->get_size(), gets initial size
@@ -940,8 +947,8 @@ type
     // If the plugin prefers to work out the scaling factor itself by querying the OS directly,
     // then ignore the call.
     //
-    // Returns false if the call was ignored.
-    // Returns true if the scaling could be applied, false otherwise.
+    // Returns true if the scaling could be applied
+    // Returns false if the call was ignored, or the scaling could not be applied.
     // [main-thread]
     //bool (*set_scale)(const clap_plugin_t *plugin, double scale);
     set_scale: function(plugin: Pclap_plugin; scale: double): boolean; cdecl;
@@ -1474,10 +1481,12 @@ type
     // destroyed.
     cookie: pointer;
 
-    name: array[0..CLAP_NAME_SIZE - 1] of byte;   // the display name
-    module: array[0..CLAP_PATH_SIZE - 1] of byte; // the module containing the param, eg:
-                                                  // "oscillators/wt1"; '/' will be used as a
-                                                  // separator to show a tree like structure.
+    // the display name
+    name: array[0..CLAP_NAME_SIZE - 1] of byte;
+
+    // the module path containing the param, eg:"oscillators/wt1"
+    // '/' will be used as a separator to show a tree like structure.
+    module: array[0..CLAP_PATH_SIZE - 1] of byte;
 
     min_value: double;     // minimum plain value
     max_value: double;     // maximum plain value
@@ -1753,125 +1762,11 @@ type
   end;
   Pclap_host_thread_check = ^Tclap_host_thread_check;
 
-
-//converters\vst2-converter.h
-
-// This interface provides all the tools to convert a vst2 plugin instance into a clap plugin instance.
-type
-  Pclap_vst2_converter = ^Tclap_vst2_converter;
-  Tclap_vst2_converter = record
-    vst2_plugin_id: uint32_t;
-    vst2_plugin_name: PAnsiChar;
-    clap_plugin_id: PAnsiChar;
-
-    // [main-thread]
-    //bool (*convert_state)(const struct clap_vst2_converter *converter,
-    //                      const clap_istream_t             *vst2,
-    //                      const clap_ostream_t             *clap);
-    convert_state: function(converter:Pclap_vst2_converter; vst2: Pclap_istream; clap: Pclap_ostream): boolean; cdecl;
-
-    // converts the vst2 param id and normalized value to clap.
-    // [thread-safe]
-    //bool (*convert_normalized_value)(const struct clap_vst2_converter *converter,
-    //                                 uint32_t                          vst2_param_id,
-    //                                 double                            vst2_normalized_value,
-    //                                 clap_id                          *clap_param_id,
-    //                                 double                           *clap_normalized_value);
-    convert_normalized_value: function(converter: Pclap_vst2_converter; vst2_param_id: uint32_t; vst2_normalized_value: double;
-                                       var clap_param_id: Tclap_id; var clap_normalized_value: double): boolean; cdecl;
-
-    // converts the vst2 param id and plain value to clap.
-    // [thread-safe]
-    //bool (*convert_plain_value)(const struct clap_vst2_converter *converter,
-    //                            uint32_t                          vst2_param_id,
-    //                            double                            vst2_plain_value,
-    //                            clap_id                          *clap_param_id,
-    //                            double                           *clap_plain_value);
-    convert_plain_value: function(converter: Pclap_vst2_converter; vst2_param_id: uint32_t; vst2_plain_value: double;
-                                  var clap_param_id: Tclap_id; var clap_plain_value: double): boolean; cdecl;
-  end;
-
-// Factory identifier
-const
-  CLAP_VST2_CONVERTER_FACTORY_ID = AnsiString('clap.vst2-converter-factory/draft0');
-
-// List all the converters available in the current DSO.
-type
-  Pclap_vst2_converter_factory = ^Tclap_vst2_converter_factory;
-  Tclap_vst2_converter_factory = record
-    // Get the number of converters
-    //uint32_t (*count)(const struct clap_vst2_converter_factory *factory);
-    count: function(factory: Pclap_vst2_converter_factory): uint32_t; cdecl;
-
-    // Get the converter at the given index
-    //const clap_vst2_converter_t *(*get)(const struct clap_vst2_converter_factory *factory,
-    //                                    uint32_t                                  index);
-    get: function(factory: Pclap_vst2_converter_factory; index: uint32_t): Pclap_vst2_converter; cdecl;
-  end;
-
-
-//converters\vst3-converter.h
-
-// This interface provides all the tools to convert a vst3 plugin instance into a clap plugin instance.
-type
-  Pclap_vst3_converter = ^Tclap_vst3_converter;
-  Tclap_vst3_converter = record
-   // The VST FUID can be constructed by:
-   // Steinberg::FUID::fromTUID(conv->vst3_plugin_tuid);
-    vst3_plugin_tuid: TGUID;
-    clap_plugin_id: PAnsiChar;
-
-    // [main-thread]
-    //bool (*convert_state)(const struct clap_vst3_converter *converter,
-    //                     const clap_istream_t             *vst3_processor,
-    //                     const clap_istream_t             *vst3_editor,
-    //                     const clap_ostream_t             *clap);
-    convert_state: function(converter: Pclap_vst3_converter; vst3_processor, vst3_editor: Pclap_istream; clap: Pclap_ostream): boolean; cdecl;
-
-    // converts the vst3 param id and normalized value to clap.
-    // [thread-safe]
-    //bool (*convert_normalized_value)(const struct clap_vst3_converter *converter,
-    //                                uint32_t                          vst3_param_id,
-    //                                double                            vst3_normalized_value,
-    //                                clap_id                          *clap_param_id,
-    //                                double                           *clap_normaliezd_value);
-    convert_normalized_value: function(converter: Pclap_vst3_converter; vst3_param_id: uint32_t; vst3_normalized_value: double;
-                                       var clap_param_id: Tclap_id; var clap_normaliezd_value: double): boolean; cdecl;
-
-    // converts the vst3 param id and plain value to clap.
-    // [thread-safe]
-    //bool (*convert_plain_value)(const struct clap_vst3_converter *converter,
-    //                           uint32_t                          vst3_param_id,
-    //                           double                            vst3_plain_value,
-    //                           clap_id                          *clap_param_id,
-    //                           double                           *clap_plain_value);
-    convert_plain_value: function(converter: Pclap_vst3_converter; vst3_param_id: uint32_t; vst3_plain_value: double;
-                                  var clap_param_id: Tclap_id; var clap_plain_value: double): boolean; cdecl;
-  end;
-
-// Factory identifier
-const
-  CLAP_VST3_CONVERTER_FACTORY_ID = AnsiString('clap.vst3-converter-factory/draft0');
-
-// List all the converters available in the current DSO.
-type
-  Pclap_vst3_converter_factory = ^Tclap_vst3_converter_factory;
-  Tclap_vst3_converter_factory = record
-    // Get the number of converters
-    //uint32_t (*count)(const struct clap_vst3_converter_factory *factory);
-    count: function(factory: Pclap_vst3_converter_factory): uint32_t; cdecl;
-
-    // Get the converter at the given index
-    //const clap_vst3_converter_t *(*get)(const struct clap_vst3_converter_factory *factory,
-    //                                    uint32_t                                  index);
-    get: function(factory: Pclap_vst3_converter_factory; index: uint32_t): Pclap_vst3_converter; cdecl;
-  end;
-
 implementation
 
 function clap_version_is_compatible(const v: Tclap_version): boolean;
 begin
-  result := (v.major = CLAP_VERSION_MAJOR) and (v.minor = CLAP_VERSION_MINOR);
+  result := (v.major >= 1);
 end;
 
 end.
