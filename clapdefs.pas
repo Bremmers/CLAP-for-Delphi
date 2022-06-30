@@ -30,7 +30,7 @@ type
 const
   CLAP_VERSION_MAJOR = 1;
   CLAP_VERSION_MINOR = 0;
-  CLAP_VERSION_REVISION = 1;
+  CLAP_VERSION_REVISION = 3;
 
   CLAP_VERSION: Tclap_version = (
     major: CLAP_VERSION_MAJOR;
@@ -99,7 +99,7 @@ type
 const
   CLAP_CORE_EVENT_SPACE_ID = 0;
 
-  // Indicate a live user event, for example a user turning a phisical knob
+  // Indicate a live user event, for example a user turning a physical knob
   // or playing a physical key.
   CLAP_EVENT_IS_LIVE = 1 shl 0;
 
@@ -122,17 +122,17 @@ const
 // The plugins are encouraged to be able to handle note events encoded as raw midi or midi2,
 // or implement clap_plugin_event_filter and reject raw midi and midi2 events.
 
-  // NOTE_ON and NOTE_OFF represents a key pressed and key released event.
+  // NOTE_ON and NOTE_OFF represents a key pressed and key released event, respectively.
   // A NOTE_ON with a velocity of 0 is valid and should not be interpreted as a NOTE_OFF.
   //
   // NOTE_CHOKE is meant to choke the voice(s), like in a drum machine when a closed hihat
-  // chokes an open hihat. This event can be sent by the host to the plugin. Here two use case:
+  // chokes an open hihat. This event can be sent by the host to the plugin. Here are two use cases:
   // - a plugin is inside a drum pad in Bitwig Studio's drum machine, and this pad is choked by
   //   another one
   // - the user double clicks the DAW's stop button in the transport which then stops the sound on
   //   every tracks
   //
-  // NOTE_END is sent by the plugin to the host. The port, channel and key are those given
+  // NOTE_END is sent by the plugin to the host. The port, channel, key and note_id are those given
   // by the host in the NOTE_ON event. In other words, this event is matched against the
   // plugin's note input port.
   // NOTE_END is useful to help the host to match the plugin's voice life time.
@@ -153,7 +153,7 @@ const
   //    Host->Plugin NoteOff(port:0, channel:0, key:64, t1)
   //    # on t2, both notes did terminate
   //    Host->Plugin NoteOn(port:0, channel:0, key:64, t3)
-  //    # Here the plugin finished to process all the frames and will tell the host
+  //    # Here the plugin finished processing all the frames and will tell the host
   //    # to terminate the voice on key 16 but not 64, because a note has been started at t3
   //    Plugin->Host NoteEnd(port:0, channel:0, key:16, time:ignored)
   //
@@ -178,9 +178,9 @@ const
   CLAP_EVENT_PARAM_VALUE = 5;
   CLAP_EVENT_PARAM_MOD = 6;
 
-  // Indicates that the user started or finished to adjust a knob.
-  // This is not mandatory to wrap parameter changes with gesture events, but this improves a lot
-  // the user experience when recording automation or overriding automation playback.
+  // Indicates that the user started or finished adjusting a knob.
+  // This is not mandatory to wrap parameter changes with gesture events, but this improves
+  // the user experience a lot when recording automation or overriding automation playback.
   // Uses clap_event_param_gesture.
   CLAP_EVENT_PARAM_GESTURE_BEGIN = 7;
   CLAP_EVENT_PARAM_GESTURE_END = 8;
@@ -398,18 +398,18 @@ const
   // Processing failed. The output buffer must be discarded.
   CLAP_PROCESS_ERROR = 0;
 
-  // Processing succeed, keep processing.
+  // Processing succeeded, keep processing.
   CLAP_PROCESS_CONTINUE = 1;
 
-  // Processing succeed, keep processing if the output is not quiet.
+  // Processing succeeded, keep processing if the output is not quiet.
   CLAP_PROCESS_CONTINUE_IF_NOT_QUIET = 2;
 
   // Rely upon the plugin's tail to determine if the plugin should continue to process.
   // see clap_plugin_tail
   CLAP_PROCESS_TAIL = 3;
 
-  // Processing succeed, but no more processing is required,
-  // until next event or variation in audio input.
+  // Processing succeeded, but no more processing is required,
+  // until the next event or variation in audio input.
   CLAP_PROCESS_SLEEP = 4;
 
 type
@@ -528,7 +528,7 @@ type
     init: function(plugin: Pclap_plugin): boolean; cdecl;
 
     // Free the plugin and its resources.
-    // It is not required to deactivate the plugin prior to this call. */}
+    // It is required to deactivate the plugin prior to this call. */}
     // [main-thread & !active]
     //void (*destroy)(const struct clap_plugin *plugin);
     destroy: procedure(plugin: Pclap_plugin); cdecl;
@@ -588,13 +588,13 @@ type
 
 //plugin-features.h
 
-// This files provides a set of standard plugin features meant to be use
+// This files provides a set of standard plugin features meant to be used
 // within clap_plugin_descriptor.features.
 //
 // For practical reasons we'll avoid spaces and use `-` instead to facilitate
 // scripts that generate the feature array.
 //
-// Non standard feature should be formated as follow: "$namespace:$feature"
+// Non standard features should be formated as follow: "$namespace:$feature"
 
 const
 
@@ -671,7 +671,7 @@ const
 
 type
   Pclap_plugin_factory = ^Tclap_plugin_factory;
-// Every methods must be thread-safe.
+// Every method must be thread-safe.
 // It is very important to be able to scan the plugin as quickly as possible.
 //
 // If the content of the factory may change due to external events, like the user installed
@@ -760,23 +760,31 @@ type
 //   - /Library/Audio/Plug-Ins/CLAP
 //   - ~/Library/Audio/Plug-Ins/CLAP
 //
-// Additionally, extra path may be specified in CLAP_PATH environment variable.
-// CLAP_PATH is formated in the same way as the OS' binary search path (PATH on UNIX, Path on Windows).
+// In addition to the OS-specific default locations above, a CLAP host must query the environment
+// for a CLAP_PATH variable, which is a list of directories formatted in the same manner as the host
+// OS binary search path (PATH on Unix, separated by `:` and Path on Windows, separated by ';', as
+// of this writing).
 //
-// Every methods must be thread-safe.
+// Each directory should be recursively searched for files and/or bundles as appropriate in your OS
+// ending with the extension `.clap`.
+//
+// Every method must be thread-safe.
   Tclap_plugin_entry = record
     clap_version: Tclap_version;     // initialized to CLAP_VERSION
 
     // This function must be called first, and can only be called once.
     //
-    // It should be as fast as possible, in order to perform very quick scan of the plugin
+    // It should be as fast as possible, in order to perform a very quick scan of the plugin
     // descriptors.
     //
     // It is forbidden to display graphical user interface in this call.
-    // It is forbidden to perform user inter-action in this call.
+    // It is forbidden to perform user interaction in this call.
     //
     // If the initialization depends upon expensive computation, maybe try to do them ahead of time
     // and cache the result.
+    //
+    // If init() returns false, then the host must not call deinit() nor any other clap
+    // related symbols from the DSO.
     //bool (*init)(const char *plugin_path);
     init: function (plugin_path: PAnsiChar): boolean; cdecl;
 
@@ -898,7 +906,7 @@ type
   end;
   Pclap_window = ^Tclap_window;
 
-// Information to improve window resizement when initiated by the host or window manager.
+// Information to improve window resizing when initiated by the host or window manager.
   Tclap_gui_resize_hints = record
     can_resize_horizontally: boolean;
     can_resize_vertically: boolean;
@@ -909,7 +917,7 @@ type
   end; 
 
 // Size (width, height) is in pixels; the corresponding windowing system extension is
-// responsible to define if it is physical pixels or logical pixels.
+// responsible for defining if it is physical pixels or logical pixels.
   Tclap_plugin_gui = record
     // Returns true if the requested gui api is supported
     // [main-thread]
@@ -1004,8 +1012,8 @@ type
     //bool (*show)(const clap_plugin_t *plugin);
     show: function(plugin: Pclap_plugin): boolean; cdecl;
 
-    // Hide the window, this method do not free the resources, it just hides
-    // the window content. Yet it maybe a good idea to stop painting timers.
+    // Hide the window, this method does not free the resources, it just hides
+    // the window content. Yet it may be a good idea to stop painting timers.
     // [main-thread]
     //bool (*hide)(const clap_plugin_t *plugin);
     hide: function(plugin: Pclap_plugin): boolean; cdecl;
@@ -1023,7 +1031,7 @@ type
     // The host doesn't have to call set_size().
     //
     // Note: if not called from the main thread, then a return value simply means that the host
-    // acknowledge the request and will process it asynchronously. If the request then can't be
+    // acknowledged the request and will process it asynchronously. If the request then can't be
     // satisfied then the host will call set_size() to revert the operation.
     //
     // [thread-safe] */
@@ -1063,7 +1071,7 @@ const
   CLAP_LOG_ERROR = 3;
   CLAP_LOG_FATAL = 4;
 
-  // Those severities should be used to report misbehaviour.
+  // These severities should be used to report misbehaviour.
   // The plugin one can be used by a layer between the plugin and the host.
   CLAP_LOG_HOST_MISBEHAVING = 5;
   CLAP_LOG_PLUGIN_MISBEHAVING = 6;
@@ -1158,19 +1166,22 @@ const
   // Main port must be at index 0.
   CLAP_AUDIO_PORT_IS_MAIN = 1 shl 0;
 
-  // The port can be used with 64 bits audio
+  // This port can be used with 64 bits audio
   CLAP_AUDIO_PORT_SUPPORTS_64BITS = 1 shl 1;
 
   // 64 bits audio is preferred with this port
   CLAP_AUDIO_PORTS_PREFERS_64BITS = 1 shl 2;
 
-   // This port must be used with the same sample size as all the other ports which have this flags.
-   // In other words if all ports have this flags then the plugin may either be used entirely with
+   // This port must be used with the same sample size as all the other ports which have this flag.
+   // In other words if all ports have this flag then the plugin may either be used entirely with
    // 64 bits audio or 32 bits audio, but it can't be mixed.
    CLAP_AUDIO_PORT_REQUIRES_COMMON_SAMPLE_SIZE = 1 shl 3;
+
 type
   Tclap_audio_port_info = record
-    id: Tclap_id;                // stable identifier
+    // id identifies a port and must be stable.
+    // id may overlap between input and output ports.
+    id: Tclap_id;
     name: array[0..CLAP_NAME_SIZE - 1] of byte; // displayable name
 
     flags: uint32_t;
@@ -1194,7 +1205,6 @@ type
   end;
 
 // The audio ports scan has to be done while the plugin is deactivated.
-type
   Tclap_plugin_audio_ports = record
     // number of ports, for either input or output
     // [main-thread]
@@ -1271,7 +1281,9 @@ const
 
 type
   Tclap_note_port_info = record
-    id: Tclap_id;                 // stable identifier
+    // id identifies a port and must be stable.
+    // id may overlap between input and output ports.
+    id: Tclap_id;
     supported_dialects: uint32_t; // bitfield, see clap_note_dialect
     preferred_dialect: uint32_t;  // one value of clap_note_dialect
     name: array[0..CLAP_NAME_SIZE - 1] of byte; // displayable name, i18n?
@@ -1325,24 +1337,24 @@ type
 ///
 /// Main idea:
 ///
-/// The host sees the plugin as an atomic entity; and acts as a controler on top of its parameters.
-/// The plugin is responsible to keep in sync its audio processor and its GUI.
+/// The host sees the plugin as an atomic entity; and acts as a controller on top of its parameters.
+/// The plugin is responsible for keeping its audio processor and its GUI in sync.
 ///
-/// The host can read at any time parameters value on the [main-thread] using
+/// The host can at any time read parameters' value on the [main-thread] using
 /// @ref clap_plugin_params.value().
 ///
-/// There is two options to communicate parameter value change, and they are not concurrent.
+/// There are two options to communicate parameter value changes, and they are not concurrent.
 /// - send automation points during clap_plugin.process()
-/// - send automation points during clap_plugin_params.flush(), this one is used when the plugin is
-///   not processing
+/// - send automation points during clap_plugin_params.flush(), for parameter changes
+///   without processing audio
 ///
 /// When the plugin changes a parameter value, it must inform the host.
 /// It will send @ref CLAP_EVENT_PARAM_VALUE event during process() or flush().
 /// If the user is adjusting the value, don't forget to mark the begining and end
-/// of the gesture by send CLAP_EVENT_PARAM_GESTURE_BEGIN and CLAP_EVENT_PARAM_GESTURE_END events.
+/// of the gesture by sending CLAP_EVENT_PARAM_GESTURE_BEGIN and CLAP_EVENT_PARAM_GESTURE_END events.
 ///
-/// @note MIDI CCs are a tricky because you may not know when the parameter adjustment ends.
-/// Also if the hosts records incoming MIDI CC and parameter change automation at the same time,
+/// @note MIDI CCs are tricky because you may not know when the parameter adjustment ends.
+/// Also if the host records incoming MIDI CC and parameter change automation at the same time,
 /// there will be a conflict at playback: MIDI CC vs Automation.
 /// The parameter automation will always target the same parameter because the param_id is stable.
 /// The MIDI CC may have a different mapping in the future and may result in a different playback.
@@ -1358,25 +1370,25 @@ type
 /// - call @ref clap_host_params.changed() if anything changed
 /// - call @ref clap_host_latency.changed() if latency changed
 /// - invalidate any other info that may be cached by the host
-/// - if the plugin is activated and the preset will introduce breaking change
+/// - if the plugin is activated and the preset will introduce breaking changes
 ///   (latency, audio ports, new parameters, ...) be sure to wait for the host
 ///   to deactivate the plugin to apply those changes.
 ///   If there are no breaking changes, the plugin can apply them them right away.
-///   The plugin is resonsible to update both its audio processor and its gui.
+///   The plugin is resonsible for updating both its audio processor and its gui.
 ///
 /// II. Turning a knob on the DAW interface
 /// - the host will send an automation event to the plugin via a process() or flush()
 ///
 /// III. Turning a knob on the Plugin interface
-/// - if the plugin is not processing, call clap_host_params->request_flush() or
-///   clap_host->request_process().
-/// - send an automation event and don't forget to set begin_adjust, end_adjust and should_record
-///   flags
-/// - the plugin is responsible to send the parameter value to its audio processor
+/// - the plugin is responsible for sending the parameter value to its audio processor
+/// - call clap_host_params->request_flush() or clap_host->request_process().
+/// - when the host calls either clap_plugin->process() or clap_plugin_params->flush(),
+///   send an automation event and don't forget to set begin_adjust,
+///   end_adjust and should_record flags
 ///
 /// IV. Turning a knob via automation
 /// - host sends an automation point during clap_plugin->process() or clap_plugin_params->flush().
-/// - the plugin is responsible to update its GUI
+/// - the plugin is responsible for updating its GUI
 ///
 /// V. Turning a knob via plugin's internal MIDI mapping
 /// - the plugin sends a CLAP_EVENT_PARAM_SET output event, set should_record to false
@@ -1424,31 +1436,31 @@ const
   // host->request_restart(), and perform the change once the plugin is re-activated.
   CLAP_PARAM_IS_AUTOMATABLE = 1 shl 5;
 
-  // Does this param supports per note automations?
+  // Does this parameter support per note automations?
   CLAP_PARAM_IS_AUTOMATABLE_PER_NOTE_ID = 1 shl 6;
 
-  // Does this param supports per note automations?
+  // Does this parameter support per key automations?
   CLAP_PARAM_IS_AUTOMATABLE_PER_KEY = 1 shl 7;
 
-  // Does this param supports per channel automations?
+  // Does this parameter support per channel automations?
   CLAP_PARAM_IS_AUTOMATABLE_PER_CHANNEL = 1 shl 8;
 
-  // Does this param supports per port automations?
+  // Does this parameter support per port automations?
   CLAP_PARAM_IS_AUTOMATABLE_PER_PORT = 1 shl 9;
 
   // Does the parameter support the modulation signal?
   CLAP_PARAM_IS_MODULATABLE = 1 shl 10;
 
-  // Does this param supports per note automations?
+  // Does this parameter support per note automations?
   CLAP_PARAM_IS_MODULATABLE_PER_NOTE_ID = 1 shl 11;
 
-  // Does this param supports per note automations?
+  // Does this parameter support per key automations?
   CLAP_PARAM_IS_MODULATABLE_PER_KEY = 1 shl 12;
 
-  // Does this param supports per channel automations?
+  // Does this parameter support per channel automations?
   CLAP_PARAM_IS_MODULATABLE_PER_CHANNEL = 1 shl 13;
 
-  // Does this param supports per channel automations?
+  // Does this parameter support per port automations?
   CLAP_PARAM_IS_MODULATABLE_PER_PORT = 1 shl 14;
 
   // Any change to this parameter will affect the plugin output and requires to be done via
@@ -1530,10 +1542,8 @@ type
 
     // Flushes a set of parameter changes.
     // This method must not be called concurrently to clap_plugin->process().
-    // This method must not be used if the plugin is processing.
     //
-    // [active && !processing : audio-thread]
-    // [!active : main-thread]
+    // [active ? audio-thread : main-thread]
     //void (*flush)(const clap_plugin_t        *plugin,
     //              const clap_input_events_t  *in,
     //              const clap_output_events_t *out);
@@ -1605,16 +1615,14 @@ type
     //void (*clear)(const clap_host_t *host, clap_id param_id, clap_param_clear_flags flags);
     clear: procedure(host: Pclap_host; param_id: Tclap_id; flags: Tclap_param_clear_flags); cdecl;
 
-    // Request the host to call clap_plugin_params->fush().
-    // This is useful if the plugin has parameters value changes to report to the host but the plugin
-    // is not processing.
-    //
-    // eg. the plugin has a USB socket to some hardware controllers and receives a parameter change
-    // while it is not processing.
-    //
-    // This must not be called on the [audio-thread].
-    //
-    // [thread-safe]
+   // Request a parameter flush.
+   //
+   // The host will then schedule a call to either:
+   // - clap_plugin.process()
+   // - clap_plugin_params->flush()
+   //
+   // This function is always safe to use and must not be called on the [audio-thread].
+   // [thread-safe,!audio-thread]
     //void (*request_flush)(const clap_host_t *host);
     request_flush: procedure(host: Pclap_host); cdecl;
   end;
@@ -1648,7 +1656,7 @@ type
   Pclap_plugin_note_name = ^Tclap_plugin_note_name;
 
   Tclap_host_note_name = record
-    // Informs the host that the note names has changed.
+    // Informs the host that the note names have changed.
     // [main-thread]
     //void (*changed)(const clap_host_t *host);
     changed: procedure(host: Pclap_host); cdecl
