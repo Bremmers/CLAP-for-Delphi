@@ -29,8 +29,8 @@ type
 
 const
   CLAP_VERSION_MAJOR = 1;
-  CLAP_VERSION_MINOR = 0;
-  CLAP_VERSION_REVISION = 3;
+  CLAP_VERSION_MINOR = 1;
+  CLAP_VERSION_REVISION = 1;
 
   CLAP_VERSION: Tclap_version = (
     major: CLAP_VERSION_MAJOR;
@@ -1119,6 +1119,60 @@ type
   Pclap_host_state = ^Tclap_host_state;
 
 
+//ext\draft\state-context.h
+
+/// @page state-context extension
+/// @brief extended state handling
+///
+/// This extension lets the host save and load the plugin state with different semantics depending
+/// on the context.
+///
+/// Briefly, when loading a preset or duplicating a device, the plugin may want to partially load
+/// the state and initialize certain things differently.
+///
+/// Save and Load operations may have a different context.
+/// All three operations should be equivalent:
+/// 1. clap_plugin_state_context.load(clap_plugin_state.save(), CLAP_STATE_CONTEXT_FOR_PRESET)
+/// 2. clap_plugin_state.load(clap_plugin_state_context.save(CLAP_STATE_CONTEXT_FOR_PRESET))
+/// 3. clap_plugin_state_context.load(
+///        clap_plugin_state_context.save(CLAP_STATE_CONTEXT_FOR_PRESET),
+///        CLAP_STATE_CONTEXT_FOR_PRESET)
+///
+/// If the plugin implements CLAP_EXT_STATE_CONTEXT then it is mandatory to also implement
+/// CLAP_EXT_STATE.
+
+const
+  CLAP_EXT_STATE_CONTEXT = AnsiString('clap.state-context.draft/1');
+
+  // suitable for duplicating a plugin instance
+  CLAP_STATE_CONTEXT_FOR_DUPLICATE = 1;
+
+  // suitable for loading a state as a preset
+  CLAP_STATE_CONTEXT_FOR_PRESET = 2;
+
+type
+  Tclap_plugin_state_context = record
+    // Saves the plugin state into stream, according to context_type.
+    // Returns true if the state was correctly saved.
+    //
+    // Note that the result may be loaded by both clap_plugin_state.load() and
+    // clap_plugin_state_context.load().
+    // [main-thread]
+    //bool (*save)(const clap_plugin_t *plugin, const clap_ostream_t *stream, uint32_t context_type);
+    save: function(plugin: Pclap_plugin; stream: Pclap_ostream; context_type: uint32_t): boolean; cdecl;
+
+    // Loads the plugin state from stream, according to context_type.
+    // Returns true if the state was correctly restored.
+    //
+    // Note that the state may have been saved by clap_plugin_state.save() or
+    // clap_plugin_state_context.save() with a different context_type.
+    // [main-thread]
+    //bool (*load)(const clap_plugin_t *plugin, const clap_istream_t *stream, uint32_t context_type);
+    load: function(plugin: Pclap_plugin; stream: Pclap_istream; context_type: uint32_t): boolean; cdecl;
+  end;
+  Pclap_plugin_state_context = ^Tclap_plugin_state_context;
+
+
 //ext\timer-support.h
 
 const
@@ -1351,7 +1405,8 @@ type
 /// When the plugin changes a parameter value, it must inform the host.
 /// It will send @ref CLAP_EVENT_PARAM_VALUE event during process() or flush().
 /// If the user is adjusting the value, don't forget to mark the begining and end
-/// of the gesture by sending CLAP_EVENT_PARAM_GESTURE_BEGIN and CLAP_EVENT_PARAM_GESTURE_END events.
+/// of the gesture by sending CLAP_EVENT_PARAM_GESTURE_BEGIN and CLAP_EVENT_PARAM_GESTURE_END
+/// events.
 ///
 /// @note MIDI CCs are tricky because you may not know when the parameter adjustment ends.
 /// Also if the host records incoming MIDI CC and parameter change automation at the same time,
@@ -1367,7 +1422,7 @@ type
 ///
 /// I. Loading a preset
 /// - load the preset in a temporary state
-/// - call @ref clap_host_params.changed() if anything changed
+/// - call @ref clap_host_params.rescan() if anything changed
 /// - call @ref clap_host_latency.changed() if latency changed
 /// - invalidate any other info that may be cached by the host
 /// - if the plugin is activated and the preset will introduce breaking changes
@@ -1451,16 +1506,16 @@ const
   // Does the parameter support the modulation signal?
   CLAP_PARAM_IS_MODULATABLE = 1 shl 10;
 
-  // Does this parameter support per note automations?
+  // Does this parameter support per note modulations?
   CLAP_PARAM_IS_MODULATABLE_PER_NOTE_ID = 1 shl 11;
 
-  // Does this parameter support per key automations?
+  // Does this parameter support per key modulations?
   CLAP_PARAM_IS_MODULATABLE_PER_KEY = 1 shl 12;
 
-  // Does this parameter support per channel automations?
+  // Does this parameter support per channel modulations?
   CLAP_PARAM_IS_MODULATABLE_PER_CHANNEL = 1 shl 13;
 
-  // Does this parameter support per port automations?
+  // Does this parameter support per port modulations?
   CLAP_PARAM_IS_MODULATABLE_PER_PORT = 1 shl 14;
 
   // Any change to this parameter will affect the plugin output and requires to be done via
@@ -1615,14 +1670,16 @@ type
     //void (*clear)(const clap_host_t *host, clap_id param_id, clap_param_clear_flags flags);
     clear: procedure(host: Pclap_host; param_id: Tclap_id; flags: Tclap_param_clear_flags); cdecl;
 
-   // Request a parameter flush.
-   //
-   // The host will then schedule a call to either:
-   // - clap_plugin.process()
-   // - clap_plugin_params->flush()
-   //
-   // This function is always safe to use and must not be called on the [audio-thread].
-   // [thread-safe,!audio-thread]
+    // Request a parameter flush.
+    //
+    // The host will then schedule a call to either:
+    // - clap_plugin.process()
+    // - clap_plugin_params->flush()
+    //
+    // This function is always safe to use and should not be called from an [audio-thread] as the
+    // plugin would already be within process() or flush().
+    //
+    // [thread-safe,!audio-thread]
     //void (*request_flush)(const clap_host_t *host);
     request_flush: procedure(host: Pclap_host); cdecl;
   end;
@@ -1753,9 +1810,34 @@ type
 const
   CLAP_EXT_THREAD_CHECK = AnsiString('clap.thread-check');
 
+/// @page thread-check
+///
+/// CLAP defines two symbolic threads:
+///
+/// main-thread:
+///    This is the thread in which most of the interaction between the plugin and host happens.
+///    It is usually the thread on which the GUI receives its events.
+///    It isn't a realtime thread, yet this thread needs to respond fast enough to user interaction,
+///    so it is recommended to run long and expensive tasks such as preset indexing or asset loading
+///    in dedicated background threads.
+///
+/// audio-thread:
+///    This thread is used for realtime audio processing. Its execution should be as deterministic
+///    as possible to meet the audio interface's deadline (can be <1ms). In other words, there is a
+///    known set of operations that should be avoided: malloc() and free(), mutexes (spin mutexes
+///    are worse), I/O, waiting, ...
+///    The audio-thread is something symbolic, there isn't one OS thread that remains the
+///    audio-thread for the plugin lifetime. As you may guess, the host is likely to have a
+///    thread pool and the plugin.process() call may be scheduled on different OS threads over time.
+///    The most important thing is that there can't be two audio-threads at the same time. All the
+///    functions marked with [audio-thread] **ARE NOT CONCURRENT**. The host may mark any OS thread,
+///    including the main-thread as the audio-thread, as long as it can guarentee that only one OS
+///    thread is the audio-thread at a time. The audio-thread can be seen as a concurrency guard for
+///    all functions marked with [audio-thread].
+
 // This interface is useful to do runtime checks and make
 // sure that the functions are called on the correct threads.
-// It is highly recommended to implement this extension
+// It is highly recommended that hosts implement this extension.
 type
   Tclap_host_thread_check = record
     // Returns true if "this" thread is the main thread.
