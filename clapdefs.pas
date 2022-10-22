@@ -30,7 +30,7 @@ type
 const
   CLAP_VERSION_MAJOR = 1;
   CLAP_VERSION_MINOR = 1;
-  CLAP_VERSION_REVISION = 1;
+  CLAP_VERSION_REVISION = 2;
 
   CLAP_VERSION: Tclap_version = (
     major: CLAP_VERSION_MAJOR;
@@ -342,6 +342,7 @@ type
   Tclap_input_events = record
     ctx: TObject; // reserved pointer for the list
 
+    // returns the number of events in the list
     //uint32_t (*size)(const struct clap_input_events *list);
     size: function(list: Pclap_input_events): uint32_t; cdecl;
 
@@ -432,8 +433,9 @@ type
     transport: Pclap_event_transport;
 
     // Audio buffers, they must have the same count as specified
-    // by clap_plugin_audio_ports->get_count().
-    // The index maps to clap_plugin_audio_ports->get_info().
+    // by clap_plugin_audio_ports->count().
+    // The index maps to clap_plugin_audio_ports->get().
+    // Input buffer and its contents are read-only.
     audio_inputs: pointer { Pclap_audio_buffer_t };
     audio_outputs: pointer { Pclap_audio_buffer_t };
     audio_inputs_count: uint32_t;
@@ -674,7 +676,8 @@ type
 // Every method must be thread-safe.
 // It is very important to be able to scan the plugin as quickly as possible.
 //
-// If the content of the factory may change due to external events, like the user installed
+// The host may use clap_plugin_invalidation_factory to detect filesystem changes
+// which may change the factory's content.
   Tclap_plugin_factory = record
     // Get the number of plugins available.
     // [thread-safe]
@@ -926,6 +929,8 @@ type
 
     // Returns true if the plugin has a preferred api.
     // The host has no obligation to honor the plugin preferrence, this is just a hint.
+    // The const char **api variable should be explicitly assigned as a pointer to
+    // one of the CLAP_WINDOW_API_ constants defined above, not strcopied.
     // [main-thread]
     //bool (*get_preferred_api)(const clap_plugin_t *plugin, const char **api, bool *is_floating);
     get_preferred_api: function(plugin: Pclap_plugin; var api: PAnsiChar; var is_floating: boolean): boolean; cdecl;
@@ -1536,16 +1541,34 @@ type
     flags: Tclap_param_info_flags;
 
     // This value is optional and set by the plugin.
-    // Its purpose is to provide a fast access to the plugin parameter:
+    // Its purpose is to provide a fast access to the
+    // plugin parameter object by caching its pointer.
+    // For instance:
     //
+    // in clap_plugin_params.get_info():
     //    Parameter *p = findParameter(param_id);
     //    param_info->cookie = p;
     //
-    //    /* and later on */
-    //    Parameter *p = (Parameter *)cookie;
+    // later, in clap_plugin.process():
     //
-    // It is invalidated on clap_host_params->rescan(CLAP_PARAM_RESCAN_ALL) and when the plugin is
-    // destroyed.
+    //    Parameter *p = (Parameter *)event->cookie;
+    //    if (!p) [[unlikely]]
+    //       p = findParameter(event->param_id);
+    //
+    // where findParameter() is a function the plugin implements
+    // to map parameter ids to internal objects.
+    //
+    // Important:
+    //  - The cookie is invalidated by a call to
+    //    clap_host_params->rescan(CLAP_PARAM_RESCAN_ALL) or when the plugin is
+    //    destroyed.
+    //  - The host will either provide the cookie as issued or nullptr
+    //    in events addressing parameters.
+    //  - The plugin must gracefully handle the case of a cookie
+    //    which is nullptr.
+    //  - Many plugins will process the parameter events more quickly if the host
+    //    can provide the cookie in a faster time than a hashmap lookup per param
+    //    per event.
     cookie: pointer;
 
     // the display name
@@ -1597,6 +1620,11 @@ type
 
     // Flushes a set of parameter changes.
     // This method must not be called concurrently to clap_plugin->process().
+    //
+    // Note: if the plugin is processing, then the process() call will already achieve the
+    // parameter update (bi-directionnal), so a call to flush isn't required, also be aware
+    // that the plugin may use the sample offset in process(), while this information would be
+    // lost within flush().
     //
     // [active ? audio-thread : main-thread]
     //void (*flush)(const clap_plugin_t        *plugin,
