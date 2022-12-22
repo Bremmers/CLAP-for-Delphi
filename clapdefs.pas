@@ -30,7 +30,7 @@ type
 const
   CLAP_VERSION_MAJOR = 1;
   CLAP_VERSION_MINOR = 1;
-  CLAP_VERSION_REVISION = 2;
+  CLAP_VERSION_REVISION = 4;
 
   CLAP_VERSION: Tclap_version = (
     major: CLAP_VERSION_MAJOR;
@@ -81,6 +81,18 @@ type
   Tclap_sectime = int64_t;
 
 
+//color.h
+
+type
+  Tclap_color = record
+    alpha: byte;
+    red: byte;
+    green: byte;
+    blue: byte;
+  end;
+  Pclap_color = ^Tclap_color;
+
+
 //events.h
 
 // event header
@@ -126,7 +138,8 @@ const
   // A NOTE_ON with a velocity of 0 is valid and should not be interpreted as a NOTE_OFF.
   //
   // NOTE_CHOKE is meant to choke the voice(s), like in a drum machine when a closed hihat
-  // chokes an open hihat. This event can be sent by the host to the plugin. Here are two use cases:
+  // chokes an open hihat. This event can be sent by the host to the plugin. Here are two use
+  // cases:
   // - a plugin is inside a drum pad in Bitwig Studio's drum machine, and this pad is choked by
   //   another one
   // - the user double clicks the DAW's stop button in the transport which then stops the sound on
@@ -275,7 +288,7 @@ type
 
     // target parameter
     param_id: Tclap_id; // @ref clap_param_info.id
-  end; 
+  end;
 
 const
   CLAP_TRANSPORT_HAS_TEMPO = 1 shl 0;
@@ -388,7 +401,7 @@ type
     data32: PPointerArray;
     data64: PPointerArray;
     channel_count: uint32_t;
-    latency: uint32_t;       // latency from/to the audio interface
+    latency: uint32_t; // latency from/to the audio interface
     constant_mask: uint64_t;
   end;
 
@@ -756,7 +769,7 @@ type
 //   - /usr/lib/clap
 //
 // Windows
-//   - %CommonFilesFolder%/CLAP/
+//   - %COMMONPROGRAMFILES%/CLAP/
 //   - %LOCALAPPDATA%/Programs/Common/CLAP/
 //
 // MacOS
@@ -917,7 +930,7 @@ type
     preseve_aspect_ratio: boolean;
     aspect_ratio_width: uint32_t;
     aspect_ratio_height: uint32_t;
-  end; 
+  end;
 
 // Size (width, height) is in pixels; the corresponding windowing system extension is
 // responsible for defining if it is physical pixels or logical pixels.
@@ -1295,7 +1308,7 @@ const
 
   // [!active] The in-place pair did change, this requires.
   CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR = 1 shl 4;
-   
+
   // [!active] The list of ports have changed: entries have been removed/added.
   CLAP_AUDIO_PORTS_RESCAN_LIST = 1 shl 5;
 
@@ -1491,7 +1504,7 @@ const
   //
   // The host can send live user changes for this parameter regardless of this flag.
   //
-  // If this parameters affect the internal processing structure of the plugin, ie: max delay, fft
+  // If this parameter affects the internal processing structure of the plugin, ie: max delay, fft
   // size, ... and the plugins needs to re-allocate its working buffers, then it should call
   // host->request_restart(), and perform the change once the plugin is re-activated.
   CLAP_PARAM_IS_AUTOMATABLE = 1 shl 5;
@@ -1622,7 +1635,7 @@ type
     // This method must not be called concurrently to clap_plugin->process().
     //
     // Note: if the plugin is processing, then the process() call will already achieve the
-    // parameter update (bi-directionnal), so a call to flush isn't required, also be aware
+    // parameter update (bi-directional), so a call to flush isn't required, also be aware
     // that the plugin may use the sample offset in process(), while this information would be
     // lost within flush().
     //
@@ -1661,7 +1674,9 @@ const
    // - some parameters were added or removed.
    // - some parameters had critical changes:
    //   - is_per_note (flag)
+   //   - is_per_key (flag)
    //   - is_per_channel (flag)
+   //   - is_per_port (flag)
    //   - is_readonly (flag)
    //   - is_bypass (flag)
    //   - is_stepped (flag)
@@ -1879,6 +1894,346 @@ type
     is_audio_thread: function(host: Pclap_host): boolean; cdecl;
   end;
   Pclap_host_thread_check = ^Tclap_host_thread_check;
+
+
+//ext\draft\context-menu.h
+
+// This extension lets the host and plugin exchange menu items and let the plugin ask the host to
+// show its context menu.
+
+const
+   CLAP_EXT_CONTEXT_MENU = AnsiString('clap.context-menu.draft/0');
+
+// There can be different target kind for a context menu
+   CLAP_CONTEXT_MENU_TARGET_KIND_GLOBAL = 0;
+   CLAP_CONTEXT_MENU_TARGET_KIND_PARAM = 1;
+   // TODO: kind trigger once the trigger ext is marked as stable
+
+// Describes the context menu target
+type
+  Tclap_context_menu_target = record
+    kind: uint32_t;
+    id: Tclap_id;
+  end;
+  Pclap_context_menu_target = ^Tclap_context_menu_target;
+
+const
+   // Adds a clickable menu entry.
+   // data: const clap_context_menu_item_entry_t*
+   CLAP_CONTEXT_MENU_ITEM_ENTRY = 0;
+
+   // Adds a clickable menu entry which will feature both a checkmark and a label.
+   // data: const clap_context_menu_item_check_entry_t*
+   CLAP_CONTEXT_MENU_ITEM_CHECK_ENTRY = 1;
+
+   // Adds a separator line.
+   // data: NULL
+   CLAP_CONTEXT_MENU_ITEM_SEPARATOR = 2;
+
+   // Starts a sub menu with the given label.
+   // data: const clap_context_menu_item_begin_submenu_t*
+   CLAP_CONTEXT_MENU_ITEM_BEGIN_SUBMENU = 3;
+
+   // Ends the current sub menu.
+   // data: NULL
+   CLAP_CONTEXT_MENU_ITEM_END_SUBMENU = 4;
+
+type
+  Tclap_context_menu_item_kind = uint32_t;
+
+  Tclap_context_menu_entry = record
+    // text to be displayed
+    &label: PAnsiChar;
+
+    // if false, then the menu entry is greyed out and not clickable
+    is_enabled: boolean;
+    action_id: Tclap_id;
+  end;
+  Pclap_context_menu_entry = ^Tclap_context_menu_entry;
+
+  Tclap_context_menu_check_entry = record
+    // text to be displayed
+    &label: PAnsiChar;
+
+    // if false, then the menu entry is greyed out and not clickable
+    is_enabled: boolean;
+
+    // if true, then the menu entry will be displayed as checked
+    is_checked: boolean;
+    action_id: Tclap_id;
+  end;
+  Pclap_context_menu_check_entry = ^Tclap_context_menu_check_entry;
+
+  Tclap_context_menu_submenu = record
+    // text to be displayed
+    &label: PAnsiChar;
+
+    // if false, then the menu entry is greyed out and won't show submenu
+    is_enabled: boolean;
+  end;
+  Pclap_context_menu_submenu = ^Tclap_context_menu_submenu;
+
+// Context menu builder.
+// This object isn't thread-safe and must be used on the same thread as it was provided.
+  Pclap_context_menu_builder = ^Tclap_context_menu_builder;
+  Tclap_context_menu_builder = record
+    ctx: TObject;
+
+    // Adds an entry to the menu.
+    // entry_data type is determined by entry_kind.
+    //bool(CLAP_ABI *add_item)(const struct clap_context_menu_builder *builder,
+    //                         clap_context_menu_item_kind_t           item_kind,
+    //                         const void                             *item_data);
+    add_item: function(builder: Pclap_context_menu_builder; item_kind: Tclap_context_menu_item_kind; item_data: pointer): boolean; cdecl;
+
+    // Returns true if the menu builder supports the given item kind
+    //bool(CLAP_ABI *supports)(const struct clap_context_menu_builder *builder,
+    //                         clap_context_menu_item_kind_t           item_kind);
+    supports: function(builder: Pclap_context_menu_builder; item_kind: Tclap_context_menu_item_kind): boolean; cdecl;
+  end;
+
+  Tclap_plugin_context_menu = record
+    // Insert plugin's menu items into the menu builder.
+    // If target is null, assume global context
+    // [main-thread]
+    //bool(CLAP_ABI *populate)(const clap_plugin_t               *plugin,
+    //                         const clap_context_menu_target_t  *target,
+    //                         const clap_context_menu_builder_t *builder);
+    populate: function(plugin: Pclap_plugin; target: Pclap_context_menu_target; builder: Pclap_context_menu_builder): boolean; cdecl;
+
+    // Performs the given action, which was previously provided to the host via populate().
+    // If target is null, assume global context
+    // [main-thread]
+    //bool(CLAP_ABI *perform)(const clap_plugin_t              *plugin,
+    //                        const clap_context_menu_target_t *target,
+    //                        clap_id                           action_id);
+    perform: function(plugin: Pclap_plugin; target: Pclap_context_menu_target; action_id: Tclap_id): boolean; cdecl;
+  end;
+  Pclap_plugin_context_menu = ^Tclap_plugin_context_menu;
+
+  Tclap_host_context_menu = record
+    // Insert host's menu items into the menu builder.
+    // If target is null, assume global context
+    // [main-thread]
+    //bool(CLAP_ABI *populate)(const clap_host_t                 *host,
+    //                         const clap_context_menu_target_t  *target,
+    //                         const clap_context_menu_builder_t *builder);
+    populate: function(host: Pclap_host; target: Pclap_context_menu_target; builder: Pclap_context_menu_builder): boolean; cdecl;
+
+    // Performs the given action, which was previously provided to the plugin via populate().
+    // If target is null, assume global context
+    // [main-thread]
+    //bool(CLAP_ABI *perform)(const clap_host_t                *host,
+    //                        const clap_context_menu_target_t *target,
+    //                        clap_id action_id);
+    perform: function(host: Pclap_host; target: Pclap_context_menu_target; action_id: Tclap_id): boolean; cdecl;
+
+    // Returns true if the host can display a popup menu for the plugin.
+    // This may depends upon the current windowing system used to display the plugin, so the
+    // return value is invalidated after creating the plugin window.
+    // [main-thread]
+    //bool(CLAP_ABI *can_popup)(const clap_host_t *host);
+    can_popup: function(host: Pclap_host): boolean; cdecl;
+
+    // Shows the host popup menu for a given parameter.
+    // If the plugin is using embedded GUI, then x and y are relative to the plugin's window,
+    // otherwise they're absolute coordinate, and screen index might be set accordingly.
+    // If target is null, assume global context
+    // [main-thread]
+    //bool(CLAP_ABI *popup)(const clap_host_t                *host,
+    //                      const clap_context_menu_target_t *target,
+    //                      int32_t                           screen_index,
+    //                      int32_t                           x,
+    //                      int32_t                           y);
+    popup: function(host: Pclap_host; target: Pclap_context_menu_target; screen_index, x, y: int32): boolean; cdecl;
+  end;
+  Pclap_host_context_menu = ^Tclap_host_context_menu;
+
+
+//ext\draft\param-indication.h
+
+// This extension lets the host tell the plugin to display a little color based indication on the
+// parameter. This can be used to indicate:
+// - a physical controller is mapped to a parameter
+// - the parameter is current playing an automation
+// - the parameter is overriding the automation
+// - etc...
+//
+// The color semantic depends upon the host here and the goal is to have a consistent experience
+// across all plugins.
+
+const
+  CLAP_EXT_PARAM_INDICATION = AnsiString('clap.param-indication.draft/4');
+
+  // The host doesn't have an automation for this parameter
+  CLAP_PARAM_INDICATION_AUTOMATION_NONE = 0;
+
+  // The host has an automation for this parameter, but it isn't playing it
+  CLAP_PARAM_INDICATION_AUTOMATION_PRESENT = 1;
+
+  // The host is playing an automation for this parameter
+  CLAP_PARAM_INDICATION_AUTOMATION_PLAYING = 2;
+
+  // The host is recording an automation on this parameter
+  CLAP_PARAM_INDICATION_AUTOMATION_RECORDING = 3;
+
+  // The host should play an automation for this parameter, but the user has started to ajust this
+  // parameter and is overriding the automation playback
+  CLAP_PARAM_INDICATION_AUTOMATION_OVERRIDING = 4;
+
+type
+  Tclap_plugin_param_indication = record
+    // Sets or clears a mapping indication.
+    //
+    // has_mapping: does the parameter currently has a mapping?
+    // color: if set, the color to use to highlight the control in the plugin GUI
+    // label: if set, a small string to display on top of the knob which identifies the hardware
+    // controller description: if set, a string which can be used in a tooltip, which describes the
+    // current mapping
+    //
+    // Parameter indications should not be saved in the plugin context, and are off by default.
+    // [main-thread]
+    //void(CLAP_ABI *set_mapping)(const clap_plugin_t *plugin,
+    //                            clap_id              param_id,
+    //                            bool                 has_mapping,
+    //                            const clap_color_t  *color,
+    //                            const char          *label,
+    //                            const char          *description);
+    set_mapping: procedure(plugin: Pclap_plugin; param_id: Tclap_id; has_mapping: boolean; color: Pclap_color; &label, description: PAnsiChar); cdecl;
+
+    // Sets or clears an automation indication.
+    //
+    // automation_state: current automation state for the given parameter
+    // color: if set, the color to use to display the automation indication in the plugin GUI
+    //
+    // Parameter indications should not be saved in the plugin context, and are off by default.
+    // [main-thread]
+    //void(CLAP_ABI *set_automation)(const clap_plugin_t *plugin,
+    //                               clap_id              param_id,
+    //                               uint32_t             automation_state,
+    //                               const clap_color_t  *color);
+    set_automation: procedure(plugin: Pclap_plugin; param_id: Tclap_id; automation_state: uint32_t; color: Pclap_color); cdecl;
+  end;
+  Pclap_plugin_param_indication = ^Tclap_plugin_param_indication;
+
+
+//ext\draft\track-info.h
+
+// This extensions let the plugin query info about the track it's in.
+// It is useful when the plugin is created, to initialize some parameters (mix, dry, wet)
+// and pick a suitable configuartion regarding audio port type and channel count.
+const
+  CLAP_EXT_TRACK_INFO = AnsiString('clap.track-info.draft/1');
+  CLAP_TRACK_INFO_HAS_TRACK_NAME = 1 shl 0;
+  CLAP_TRACK_INFO_HAS_TRACK_COLOR = 1 shl 1;
+  CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL = 1 shl 2;
+  // This plugin is on a return track, initialize with wet 100%
+  CLAP_TRACK_INFO_IS_FOR_RETURN_TRACK = 1 shl 3;
+  // This plugin is on a bus track, initialize with appropriate settings for bus processing
+  CLAP_TRACK_INFO_IS_FOR_BUS = 1 shl 4;
+  // This plugin is on the master, initialize with appropriate settings for channel processing
+  CLAP_TRACK_INFO_IS_FOR_MASTER = 1 shl 5;
+
+type
+  Tclap_track_info = record
+    flags: uint64_t; // see the flags above
+    // track name, available if flags contain CLAP_TRACK_INFO_HAS_TRACK_NAME
+    name: array[0..CLAP_NAME_SIZE - 1] of byte;
+    // track color, available if flags contain CLAP_TRACK_INFO_HAS_TRACK_COLOR
+    color: Tclap_color;
+    // availabe if flags contain CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL
+    // see audio-ports.h, struct clap_audio_port_info to learn how to use channel count and port type
+    audio_channel_count: int32_t;
+    audio_port_type: PAnsiChar;
+  end;
+  Pclap_track_info = ^Tclap_track_info;
+  Tclap_plugin_track_info = record
+    // Called when the info changes.
+    // [main-thread]
+    //void(CLAP_ABI *changed)(const clap_plugin_t *plugin);
+    changed: procedure(plugin: Pclap_plugin); cdecl;
+  end;
+  Pclap_plugin_track_info = ^Tclap_plugin_track_info;
+  Tclap_host_track_info = record
+    // Get info about the track the plugin belongs to.
+    // [main-thread]
+    //bool(CLAP_ABI *get)(const clap_host_t *host, clap_track_info_t *info);
+    get: function(host: Pclap_host; info: Pclap_track_info): boolean; cdecl;
+  end;
+  Pclap_host_track_info = ^Tclap_host_track_info;
+
+
+//ext\draft\transport-control.h
+
+// This extension lets the plugin submit transport requests to the host.
+// The host has no obligation to execute these requests, so the interface may be
+// partially working.
+
+const
+  CLAP_EXT_TRANSPORT_CONTROL = AnsiString('clap.transport-control.draft/0');
+
+type
+  Tclap_host_transport_control = record
+    // Jumps back to the start point and starts the transport
+    // [main-thread]
+    //void(CLAP_ABI *request_start)(const clap_host_t *host);
+    request_start: procedure(host: Pclap_host); cdecl;
+
+    // Stops the transport, and jumps to the start point
+    // [main-thread]
+    //void(CLAP_ABI *request_stop)(const clap_host_t *host);
+    request_stop: procedure(host: Pclap_host); cdecl;
+
+    // If not playing, starts the transport from its current position
+    // [main-thread]
+    //void(CLAP_ABI *request_continue)(const clap_host_t *host);
+    request_continue: procedure(host: Pclap_host); cdecl;
+
+    // If playing, stops the transport at the current position
+    // [main-thread]
+    //void(CLAP_ABI *request_pause)(const clap_host_t *host);
+    request_pause: procedure(host: Pclap_host); cdecl;
+
+    // Equivalent to what "space bar" does with most DAWs
+    // [main-thread]
+    //void(CLAP_ABI *request_toggle_play)(const clap_host_t *host);
+    request_toggle_play: procedure(host: Pclap_host); cdecl;
+
+    // Jumps the transport to the given position.
+    // Does not start the transport.
+    // [main-thread]
+    //void(CLAP_ABI *request_jump)(const clap_host_t *host, clap_beattime position);
+    request_jump: procedure(host: Pclap_host; position: Tclap_beattime); cdecl;
+
+    // Sets the loop region
+    // [main-thread]
+    //void(CLAP_ABI *request_loop_region)(const clap_host_t *host,
+    //                                   clap_beattime      start,
+    //                                   clap_beattime      duration);
+    request_loop_region: procedure(host: Pclap_host; start, duration: Tclap_beattime); cdecl;
+
+    // Toggles looping
+    // [main-thread]
+    //void(CLAP_ABI *request_toggle_loop)(const clap_host_t *host);
+    request_toggle_loop: procedure(host: Pclap_host); cdecl;
+
+    // Enables/Disables looping
+    // [main-thread]
+    //void(CLAP_ABI *request_enable_loop)(const clap_host_t *host, bool is_enabled);
+    request_enable_loop: procedure(host: Pclap_host; is_enabled: boolean); cdecl;
+
+    // Enables/Disables recording
+    // [main-thread]
+    //void(CLAP_ABI *request_record)(const clap_host_t *host, bool is_recording);
+    request_record: procedure(host: Pclap_host; is_recording: boolean); cdecl;
+
+    // Toggles recording
+    // [main-thread]
+    //void(CLAP_ABI *request_toggle_record)(const clap_host_t *host);
+    request_toggle_record: procedure(host: Pclap_host); cdecl;
+  end;
+  Pclap_host_transport_control = ^Tclap_host_transport_control;
+
 
 implementation
 
