@@ -30,7 +30,7 @@ type
 const
   CLAP_VERSION_MAJOR = 1;
   CLAP_VERSION_MINOR = 1;
-  CLAP_VERSION_REVISION = 4;
+  CLAP_VERSION_REVISION = 6;
 
   CLAP_VERSION: Tclap_version = (
     major: CLAP_VERSION_MAJOR;
@@ -476,9 +476,11 @@ type
     name: PAnsiChar;    // eg: "Bitwig Studio"
     vendor: PAnsiChar;  // eg: "Bitwig GmbH"
     url: PAnsiChar;     // eg: "https://bitwig.com"
-    version: PAnsiChar; // eg: "4.3"
+    version: PAnsiChar; // eg: "4.3", see plugin.h for advice on how to format the version
 
     // Query an extension.
+    // It is forbidden to call it before plugin->init().
+    // You can call it within plugin->init() call, and after.
     // [thread-safe]
     //const void *(*get_extension)(const struct clap_host *host, const char *extension_id);
     get_extension: function(host: Pclap_host; extension_id: PAnsiChar): pointer; cdecl;
@@ -513,6 +515,14 @@ type
 
     // Mandatory fields must be set and must not be blank.
     // Otherwise the fields can be null or blank, though it is safer to make them blank.
+    //
+    // Some indications regarding id and version
+    // - id is an arbritrary string which should be unique to your plugin,
+    //   we encourage you to use a reverse URI eg: "com.u-he.diva"
+    // - version is an arbitrary string which describes a plugin,
+    //   it is useful for the host to understand and be able to compare two different
+    //   version strings, so here is a regex like expression which is likely to be
+    //   understood by most hosts: MAJOR(.MINOR(.REVISION)?)?( (Alpha|Beta) XREV)?
     id: PAnsiChar;          // eg: "com.u-he.diva, mandatory"
     name: PAnsiChar;        // eg: "Diva", mandatory
     vendor: PAnsiChar;      // eg: "u-he"
@@ -538,6 +548,7 @@ type
 
     // Must be called after creating the plugin.
     // If init returns false, the host must destroy the plugin instance.
+    // If init returns true, then the plugin is initialized and in the deactivated state.
     // [main-thread]
     //bool (*init)(const struct clap_plugin *plugin);
     init: function(plugin: Pclap_plugin): boolean; cdecl;
@@ -580,15 +591,19 @@ type
     //
     // [audio-thread & active_state]
     //void (*reset)(const struct clap_plugin *plugin);
-	  reset: procedure(plugin: Pclap_plugin); cdecl;
+    reset: procedure(plugin: Pclap_plugin); cdecl;
 
     // process audio, events, ...
+    // All the pointers coming from clap_process_t and its nested attributes,
+    // are valid until process() returns.
     // [audio-thread & active_state & processing_state]
     //clap_process_status (*process)(const struct clap_plugin *plugin, const clap_process_t *process);
     process: function(plugin: Pclap_plugin; process: Pclap_process): Tclap_process_status; cdecl;
 
     // Query an extension.
     // The returned pointer is owned by the plugin.
+    // It is forbidden to call it before plugin->init().
+    // You can call it within plugin->init() call, and after.
     // [thread-safe]
     //const void *(*get_extension)(const struct clap_plugin *plugin, const char *id);
     get_extension: function(plugin: Pclap_plugin; id: PAnsiChar): pointer; cdecl;
@@ -1328,6 +1343,72 @@ type
   end;
 
 
+//audio-ports-config.h
+
+/// @page Audio Ports Config
+///
+/// This extension provides a way for the plugin to describe possible port configurations, for
+/// example mono, stereo, surround, ... and a way for the host to select a configuration.
+///
+/// After the plugin initialization, the host may scan the list of configurations and eventually
+/// select one that fits the plugin context. The host can only select a configuration if the plugin
+/// is deactivated.
+///
+/// A configuration is a very simple description of the audio ports:
+/// - it describes the main input and output ports
+/// - it has a name that can be displayed to the user
+///
+/// The idea behind the configurations, is to let the user choose one via a menu.
+///
+/// Plugins with very complex configuration possibilities should let the user configure the ports
+/// from the plugin GUI, and call @ref clap_host_audio_ports.rescan(CLAP_AUDIO_PORTS_RESCAN_ALL).
+const
+  CLAP_EXT_AUDIO_PORTS_CONFIG = AnsiString('clap.audio-ports-config');
+// Minimalistic description of ports configuration
+type
+  Tclap_audio_ports_config = record
+    id: Tclap_id;
+    name: array[0..CLAP_NAME_SIZE - 1] of byte;
+    input_port_count: uint32_t;
+    output_port_count: uint32_t;
+    // main input info
+    has_main_input: boolean;
+    main_input_channel_count: uint32_t;
+    main_input_port_type: PAnsiChar;
+    // main output info
+    has_main_output: boolean;
+    main_output_channel_count: uint32_t;
+    main_output_port_type: PAnsiChar;
+  end;
+  Pclap_audio_ports_config = ^Tclap_audio_ports_config;
+// The audio ports config scan has to be done while the plugin is deactivated.
+  Tclap_plugin_audio_ports_config = record
+    // gets the number of available configurations
+    // [main-thread]
+    //uint32_t(CLAP_ABI *count)(const clap_plugin_t *plugin);
+    count: function(plugin: Pclap_plugin): uint32_t; cdecl;
+    // gets information about a configuration
+    // [main-thread]
+    //bool(CLAP_ABI *get)(const clap_plugin_t       *plugin,
+    //                   uint32_t                   index,
+    //                   clap_audio_ports_config_t *config);
+    get: function(plugin: Pclap_plugin; index: uint32_t; config: Pclap_audio_ports_config): boolean; cdecl;
+    // selects the configuration designated by id
+    // returns true if the configuration could be applied
+    // Once applied the host should scan again the audio ports.
+    // [main-thread,plugin-deactivated]
+    //bool(CLAP_ABI *select)(const clap_plugin_t *plugin, clap_id config_id);
+    select: function(plugin: Pclap_plugin; config_id: Tclap_id): boolean; cdecl;
+  end;
+  Pclap_plugin_audio_ports_config = ^Tclap_plugin_audio_ports_config;
+  Tclap_host_audio_ports_config = record
+    // Rescan the full list of configs.
+    // [main-thread]
+    //void(CLAP_ABI *rescan)(const clap_host_t *host);
+    rescan: procedure(host: Pclap_host); cdecl;
+  end;
+  Pclap_host_audio_ports_config = ^Tclap_host_audio_ports_config;
+
 //ext\note-ports.h
 
 /// @page Note Ports
@@ -1474,6 +1555,41 @@ type
 ///   - if a parameter is gone or is created with an id that may have been used before,
 ///     call clap_host_params.clear(host, param_id, CLAP_PARAM_CLEAR_ALL)
 ///   - call clap_host_params->rescan(CLAP_PARAM_RESCAN_ALL)
+///
+/// CLAP allows the plugin to change the parameter range, yet the plugin developper
+/// should be aware that doing so isn't without risk, especially if you made the
+/// promise to never change the sound. If you want to be 100% certain that the
+/// sound will not change with all host, then simply never change the range.
+///
+/// There are two approaches to automations, either you automate the plain value,
+/// or you automate the knob position. The first option will be robust to a range
+/// increase, while the second won't be.
+///
+/// If the host goes with the second approach (automating the knob position), it means
+/// that the plugin is hosted in a relaxed environment regarding sound changes (they are
+/// accepted, and not a concern as long as they are reasonable). Though, stepped parameters
+/// should be stored as plain value in the document.
+///
+/// If the host goes with the first approach, there will still be situation where the
+/// sound may innevitably change. For example, if the plugin increase the range, there
+/// is an automation playing at the max value and on top of that an LFO is applied.
+/// See the following curve:
+///                                   .
+///                                  . .
+///          .....                  .   .
+/// before: .     .     and after: .     .
+///
+/// Advices for the host:
+/// - store plain values in the document (automation)
+/// - store modulation amount in plain value delta, not in percentage
+/// - when you apply a CC mapping, remember the min/max plain values so you can adjust
+///
+/// Advice for the plugin:
+/// - think carefully about your parameter range when designing your DSP
+/// - avoid shrinking parameter ranges, they are very likely to change the sound
+/// - consider changing the parameter range as a tradeoff: what you improve vs what you break
+/// - if you plan to use adapters for other plugin formats, then you need to pay extra
+///   attention to the adapter requirements
 
 const
   CLAP_EXT_PARAMS = AnsiString('clap.params');
@@ -1548,14 +1664,13 @@ type
 
 ///* This describes a parameter */
   Tclap_param_info = record
-    // stable parameter identifier, it must never change.
+    // Stable parameter identifier, it must never change.
     id: Tclap_id;
 
     flags: Tclap_param_info_flags;
 
     // This value is optional and set by the plugin.
-    // Its purpose is to provide a fast access to the
-    // plugin parameter object by caching its pointer.
+    // Its purpose is to provide a fast access to the plugin parameter object by caching its pointer.
     // For instance:
     //
     // in clap_plugin_params.get_info():
@@ -1568,32 +1683,31 @@ type
     //    if (!p) [[unlikely]]
     //       p = findParameter(event->param_id);
     //
-    // where findParameter() is a function the plugin implements
-    // to map parameter ids to internal objects.
+    // where findParameter() is a function the plugin implements to map parameter ids to internal
+    // objects.
     //
     // Important:
-    //  - The cookie is invalidated by a call to
-    //    clap_host_params->rescan(CLAP_PARAM_RESCAN_ALL) or when the plugin is
-    //    destroyed.
-    //  - The host will either provide the cookie as issued or nullptr
-    //    in events addressing parameters.
-    //  - The plugin must gracefully handle the case of a cookie
-    //    which is nullptr.
-    //  - Many plugins will process the parameter events more quickly if the host
-    //    can provide the cookie in a faster time than a hashmap lookup per param
-    //    per event.
-    cookie: pointer;
+    //  - The cookie is invalidated by a call to clap_host_params->rescan(CLAP_PARAM_RESCAN_ALL) or
+    //    when the plugin is destroyed.
+    //  - The host will either provide the cookie as issued or nullptr in events addressing
+    //    parameters.
+    //  - The plugin must gracefully handle the case of a cookie which is nullptr.
+    //  - Many plugins will process the parameter events more quickly if the host can provide the
+    //    cookie in a faster time than a hashmap lookup per param per event.
+  cookie: pointer;
 
-    // the display name
+    // The display name. eg: "Volume". This does not need to be unique. Do not include the module
+    // text in this. The host should concatenate/format the module + name in the case where showing
+    // the name alone would be too vague.
     name: array[0..CLAP_NAME_SIZE - 1] of byte;
 
-    // the module path containing the param, eg:"oscillators/wt1"
-    // '/' will be used as a separator to show a tree like structure.
+    // The module path containing the param, eg: "Oscillators/Wavetable 1".
+    // '/' will be used as a separator to show a tree-like structure.
     module: array[0..CLAP_PATH_SIZE - 1] of byte;
 
-    min_value: double;     // minimum plain value
-    max_value: double;     // maximum plain value
-    default_value: double; // default plain value
+    min_value: double;     // Minimum plain value
+    max_value: double;     // Maximum plain value
+    default_value: double; // Default plain value
   end;
   Pclap_param_info = ^Tclap_param_info;
 
@@ -1610,26 +1724,30 @@ type
     //                 clap_param_info_t   *param_info);
     get_info: function(plugin: Pclap_plugin; param_index: uint32_t; var param_info: Tclap_param_info): boolean; cdecl;
 
-    // Gets the parameter plain value.
+    // Writes the parameter's current value to out_value. Returns true on success.
     // [main-thread]
     //bool (*get_value)(const clap_plugin_t *plugin, clap_id param_id, double *value);
     get_value: function(plugin: Pclap_plugin; param_id: Tclap_id; var value: double): boolean; cdecl;
 
-    // Formats the display text for the given parameter value.
-    // The host should always format the parameter value to text using this function
-    // before displaying it to the user.
+    // Fills out_buffer with a null-terminated UTF-8 string that represents the parameter at the
+    // given 'value' argument. eg: "2.3 kHz". Returns true on success. The host should always use
+    // this to format parameter values before displaying it to the user. [main-thread]
     // [main-thread]
-    //bool (*value_to_text)(
-    //  const clap_plugin_t *plugin, clap_id param_id, double value, char *display, uint32_t size);
-    value_to_text: function(plugin: Pclap_plugin; param_id: Tclap_id; value: double; display: PAnsiChar; size: uint32_t): boolean; cdecl;
+    //bool(CLAP_ABI *value_to_text)(const clap_plugin_t *plugin,
+    //                              clap_id              param_id,
+    //                              double               value,
+    //                              char                *out_buffer,
+    //                              uint32_t             out_buffer_capacity);
+    value_to_text: function(plugin: Pclap_plugin; param_id: Tclap_id; value: double; out_buffer: PAnsiChar; out_buffer_capacity: uint32_t): boolean; cdecl;
 
-    // Converts the display text to a parameter value.
+    // Converts the null-terminated UTF-8 param_value_text into a double and writes it to out_value.
+    // Returns true on success. The host can use this to convert user input into a parameter value.
     // [main-thread]
     //bool (*text_to_value)(const clap_plugin_t *plugin,
     //                     clap_id              param_id,
-    //                     const char          *display,
-    //                     double              *value);
-    text_to_value: function(plugin: Pclap_plugin; param_id: Tclap_id; display: PAnsiChar; var value: double): boolean; cdecl;
+    //                     const char          *param_value_text,
+    //                     double              *out_value);
+    text_to_value: function(plugin: Pclap_plugin; param_id: Tclap_id; param_value_text: PAnsiChar; var out_value: double): boolean; cdecl;
 
     // Flushes a set of parameter changes.
     // This method must not be called concurrently to clap_plugin->process().
