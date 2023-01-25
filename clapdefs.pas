@@ -30,7 +30,7 @@ type
 const
   CLAP_VERSION_MAJOR = 1;
   CLAP_VERSION_MINOR = 1;
-  CLAP_VERSION_REVISION = 6;
+  CLAP_VERSION_REVISION = 7;
 
   CLAP_VERSION: Tclap_version = (
     major: CLAP_VERSION_MAJOR;
@@ -479,6 +479,7 @@ type
     version: PAnsiChar; // eg: "4.3", see plugin.h for advice on how to format the version
 
     // Query an extension.
+    // The returned pointer is owned by the host.
     // It is forbidden to call it before plugin->init().
     // You can call it within plugin->init() call, and after.
     // [thread-safe]
@@ -641,6 +642,9 @@ const
 // Add this feature if your plugin is a note effect or a note generator/sequencer
   CLAP_PLUGIN_FEATURE_NOTE_EFFECT = 'note-effect';
 
+// Add this feature if your plugin converts audio to notes
+  CLAP_PLUGIN_FEATURE_NOTE_DETECTOR = 'note-detector';
+
 // Add this feature if your plugin is an analyzer
   CLAP_PLUGIN_FEATURE_ANALYZER = 'analyzer';
 
@@ -694,8 +698,10 @@ const
   CLAP_PLUGIN_FEATURE_AMBISONIC = 'ambisonic';
 
 
-//plugin-factory.h
+//factory\plugin-factory.h
 
+// Use it to retrieve const clap_plugin_factory_t* from
+// clap_plugin_entry.get_factory()
 const
   CLAP_PLUGIN_FACTORY_ID = AnsiString('clap.plugin-factory');
 
@@ -732,7 +738,12 @@ type
   end;
 
 
-//plugin-invalidation.h
+//factory\draft\plugin-invalidation.h
+
+// Use it to retrieve const clap_plugin_invalidation_factory_t* from
+// clap_plugin_entry.get_factory()
+const
+  CLAP_PLUGIN_INVALIDATION_FACTORY_ID = AnsiString('clap.plugin-invalidation-factory/draft0');
 
 type
   Tclap_plugin_invalidation_source = record
@@ -744,9 +755,6 @@ type
     recursive_scan: boolean;
   end;
   Pclap_plugin_invalidation_source = ^Tclap_plugin_invalidation_source;
-
-const
-  CLAP_PLUGIN_INVALIDATION_FACTORY_ID = AnsiString('clap.plugin-invalidation-factory/draft0');
 
 // Used to figure out when a plugin needs to be scanned again.
 // Imagine a situation with a single entry point: my-plugin.clap which then scans itself
@@ -823,7 +831,7 @@ type
     //void (*deinit)(void);
     deinit: procedure; cdecl;
 
-    // Get the pointer to a factory. See plugin-factory.h for an example.
+    // Get the pointer to a factory. See See factory/plugin-factory.h for an example.
     //
     // Returns null if the factory is not provided.
     // The returned pointer must *not* be freed by the caller.
@@ -1290,6 +1298,7 @@ type
     // if not supported set to CLAP_INVALID_ID
     in_place_pair: Tclap_id;
   end;
+  Pclap_audio_port_info = ^Tclap_audio_port_info;
 
 // The audio ports scan has to be done while the plugin is deactivated.
   Tclap_plugin_audio_ports = record
@@ -1343,7 +1352,7 @@ type
   end;
 
 
-//audio-ports-config.h
+//ext\audio-ports-config.h
 
 /// @page Audio Ports Config
 ///
@@ -1362,8 +1371,13 @@ type
 ///
 /// Plugins with very complex configuration possibilities should let the user configure the ports
 /// from the plugin GUI, and call @ref clap_host_audio_ports.rescan(CLAP_AUDIO_PORTS_RESCAN_ALL).
+///
+/// To inquire the exact bus layout, the plugin implements the clap_plugin_audio_ports_config_info_t
+/// extension where all busses can be retrieved in the same way as in the audio-port extension.
 const
   CLAP_EXT_AUDIO_PORTS_CONFIG = AnsiString('clap.audio-ports-config');
+  CLAP_EXT_AUDIO_PORTS_CONFIG_INFO = AnsiString('clap.audio-ports-config-info/draft-0');
+
 // Minimalistic description of ports configuration
 type
   Tclap_audio_ports_config = record
@@ -1381,18 +1395,21 @@ type
     main_output_port_type: PAnsiChar;
   end;
   Pclap_audio_ports_config = ^Tclap_audio_ports_config;
+
 // The audio ports config scan has to be done while the plugin is deactivated.
   Tclap_plugin_audio_ports_config = record
     // gets the number of available configurations
     // [main-thread]
     //uint32_t(CLAP_ABI *count)(const clap_plugin_t *plugin);
     count: function(plugin: Pclap_plugin): uint32_t; cdecl;
+
     // gets information about a configuration
     // [main-thread]
     //bool(CLAP_ABI *get)(const clap_plugin_t       *plugin,
     //                   uint32_t                   index,
     //                   clap_audio_ports_config_t *config);
     get: function(plugin: Pclap_plugin; index: uint32_t; config: Pclap_audio_ports_config): boolean; cdecl;
+
     // selects the configuration designated by id
     // returns true if the configuration could be applied
     // Once applied the host should scan again the audio ports.
@@ -1401,6 +1418,26 @@ type
     select: function(plugin: Pclap_plugin; config_id: Tclap_id): boolean; cdecl;
   end;
   Pclap_plugin_audio_ports_config = ^Tclap_plugin_audio_ports_config;
+
+// Extended config info
+  Tclap_plugin_audio_ports_config_info = record
+    // Gets the id of the currently selected config, or CLAP_INVALID_ID if the current port
+    // layout isn't part of the config list.
+    //
+    // [main-thread]
+    //clap_id(CLAP_ABI *current_config)(const clap_plugin_t *plugin);
+    current_config: function(plugin: Pclap_plugin): Tclap_id; cdecl;
+    // Get info about about an audio port, for a given config_id.
+    // This is analogous to clap_plugin_audio_ports.get().
+    // [main-thread]
+    //bool(CLAP_ABI *get)(const clap_plugin_t    *plugin,
+    //                    clap_id                 config_id,
+    //                    uint32_t                port_index,
+    //                    bool                    is_input,
+    //                    clap_audio_port_info_t *info);
+    get: function(plugin: Pclap_plugin; config_id: Tclap_id; port_index: uint32_t; is_input: boolean; info: Pclap_audio_port_info): boolean; cdecl;
+  end;
+
   Tclap_host_audio_ports_config = record
     // Rescan the full list of configs.
     // [main-thread]
@@ -1528,7 +1565,7 @@ type
 ///   (latency, audio ports, new parameters, ...) be sure to wait for the host
 ///   to deactivate the plugin to apply those changes.
 ///   If there are no breaking changes, the plugin can apply them them right away.
-///   The plugin is resonsible for updating both its audio processor and its gui.
+///   The plugin is responsible for updating both its audio processor and its gui.
 ///
 /// II. Turning a knob on the DAW interface
 /// - the host will send an automation event to the plugin via a process() or flush()
@@ -1545,8 +1582,8 @@ type
 /// - the plugin is responsible for updating its GUI
 ///
 /// V. Turning a knob via plugin's internal MIDI mapping
-/// - the plugin sends a CLAP_EVENT_PARAM_SET output event, set should_record to false
-/// - the plugin is responsible to update its GUI
+/// - the plugin sends a CLAP_EVENT_PARAM_VALUE output event, set should_record to false
+/// - the plugin is responsible for updating its GUI
 ///
 /// VI. Adding or removing parameters
 /// - if the plugin is activated call clap_host->restart()
@@ -1579,7 +1616,7 @@ type
 ///          .....                  .   .
 /// before: .     .     and after: .     .
 ///
-/// Advices for the host:
+/// Advice for the host:
 /// - store plain values in the document (automation)
 /// - store modulation amount in plain value delta, not in percentage
 /// - when you apply a CC mapping, remember the min/max plain values so you can adjust
@@ -1694,7 +1731,7 @@ type
     //  - The plugin must gracefully handle the case of a cookie which is nullptr.
     //  - Many plugins will process the parameter events more quickly if the host can provide the
     //    cookie in a faster time than a hashmap lookup per param per event.
-  cookie: pointer;
+    cookie: pointer;
 
     // The display name. eg: "Volume". This does not need to be unique. Do not include the module
     // text in this. The host should concatenate/format the module + name in the case where showing
@@ -2056,6 +2093,11 @@ const
    // data: NULL
    CLAP_CONTEXT_MENU_ITEM_END_SUBMENU = 4;
 
+
+   // Adds a title entry
+   // data: const clap_context_menu_item_title_t *
+   CLAP_CONTEXT_MENU_ITEM_TITLE = 5;
+   
 type
   Tclap_context_menu_item_kind = uint32_t;
 
@@ -2081,6 +2123,15 @@ type
     action_id: Tclap_id;
   end;
   Pclap_context_menu_check_entry = ^Tclap_context_menu_check_entry;
+
+  Tclap_context_menu_item_title = record
+    // text to be displayed
+    title: PAnsiChar;
+
+    // if false, then the menu entry is greyed out
+    is_enabled: boolean;
+  end;	
+  Pclap_context_menu_item_title = ^Tclap_context_menu_item_title;
 
   Tclap_context_menu_submenu = record
     // text to be displayed
@@ -2235,6 +2286,83 @@ type
   Pclap_plugin_param_indication = ^Tclap_plugin_param_indication;
 
 
+//ext\draft\remote-controls.h
+
+// This extension let the plugin provide a structured way of mapping parameters to an hardware
+// controller.
+//
+// This is done by providing a set of remote control pages organized by section.
+// A page contains up to 8 controls, which references parameters using param_id.
+//
+// |`- [section:main]
+// |    `- [name:main] performance controls
+// |`- [section:osc]
+// |   |`- [name:osc1] osc1 page
+// |   |`- [name:osc2] osc2 page
+// |   |`- [name:osc-sync] osc sync page
+// |    `- [name:osc-noise] osc noise page
+// |`- [section:filter]
+// |   |`- [name:flt1] filter 1 page
+// |    `- [name:flt2] filter 2 page
+// |`- [section:env]
+// |   |`- [name:env1] env1 page
+// |    `- [name:env2] env2 page
+// |`- [section:lfo]
+// |   |`- [name:lfo1] env1 page
+// |    `- [name:lfo2] env2 page
+//  `- etc...
+//
+// One possible workflow is to have a set of buttons, which correspond to a section.
+// Pressing that button once gets you to the first page of the section.
+// Press it again to cycle through the section's pages.
+const
+  CLAP_EXT_REMOTE_CONTROLS = AnsiString('clap.remote-controls.draft/2');
+
+  CLAP_REMOTE_CONTROLS_COUNT = 8;
+
+type
+  Tclap_remote_controls_page = record
+    section_name: array[0..CLAP_NAME_SIZE - 1] of byte;
+    page_id: Tclap_id;
+    page_name: array[0..CLAP_NAME_SIZE - 1] of byte;
+    param_ids: array[0..CLAP_REMOTE_CONTROLS_COUNT - 1] of Tclap_id;
+
+    // This is used to separate device pages versus preset pages.
+    // If true, then this page is specific to this preset.
+    is_for_preset: boolean;
+  end;
+  Pclap_remote_controls_page = ^Tclap_remote_controls_page;
+
+  Tclap_plugin_remote_controls = record
+    // Returns the number of pages.
+    // [main-thread]
+    //uint32_t(CLAP_ABI *count)(const clap_plugin_t *plugin);
+    count: function(plugin: Pclap_plugin): uint32_t; cdecl;
+
+    // Get a page by index.
+    // [main-thread]
+    //bool(CLAP_ABI *get)(const clap_plugin_t         *plugin,
+    //                    uint32_t                     page_index,
+    //                    clap_remote_controls_page_t *page);
+    get: function(plugin: Pclap_plugin; page_index: uint32_t; page: Pclap_remote_controls_page): boolean; cdecl;
+  end;
+  Pclap_plugin_remote_controls = ^Tclap_plugin_remote_controls;
+
+  Tclap_host_remote_controls = record
+    // Informs the host that the remote controls have changed.
+    // [main-thread]
+    //void(CLAP_ABI *changed)(const clap_host_t *host);
+    changed: procedure(host: Pclap_host); cdecl;
+
+    // Suggest a page to the host because it correspond to what the user is currently editing in the
+    // plugin's GUI.
+    // [main-thread]
+    //void(CLAP_ABI *suggest_page)(const clap_host_t *host, clap_id page_id);
+    suggest_page: procedure(host: Pclap_host; page_id: Tclap_id); cdecl;
+  end;
+  Pclap_host_remote_controls = ^Tclap_host_remote_controls;
+
+
 //ext\draft\track-info.h
 
 // This extensions let the plugin query info about the track it's in.
@@ -2351,6 +2479,385 @@ type
     request_toggle_record: procedure(host: Pclap_host); cdecl;
   end;
   Pclap_host_transport_control = ^Tclap_host_transport_control;
+
+
+//ext\draft\preset-load.h
+
+const
+  CLAP_EXT_PRESET_LOAD = AnsiString('clap.preset-load.draft/1');
+
+type
+  Tclap_plugin_preset_load = record
+    // Loads a preset in the plugin native preset file format from a URI. eg:
+    // - "file:///home/abique/.u-he/Diva/Presets/Diva/HS Bass Nine.h2p", load_key: null
+    // - "plugin://<plugin-id>", load_key: <XXX>
+    //
+    // The preset discovery provider defines the uriand load_key to be passed to this function.
+    //
+    // [main-thread]
+    //bool(CLAP_ABI *from_uri)(const clap_plugin_t *plugin, const char *uri, const char *load_key);
+    from_uri: function(plugin: Pclap_plugin; uri, load_key: PAnsiChar): boolean; cdecl;
+  end;
+  Pclap_plugin_preset_load = ^Tclap_plugin_preset_load;
+
+  Tclap_host_preset_load = record
+    // Called if clap_plugin_preset_load.load() failed.
+    // os_error: the operating system error, if applicable. If not applicable set it to a non-error
+    // value, eg: 0 on unix and Windows.
+    //
+    // [main-thread]
+    //void(CLAP_ABI *on_error)(const clap_host_t *host,
+    //                         const char          *uri,
+    //                         int32_t              os_error,
+    //                         const char          *msg);
+    on_error: procedure(host: Pclap_host; uri: PansiChar; os_error: int32_t; msg: PAnsiChar); cdecl;
+
+    // Informs the host that the following preset has been loaded.
+    // This contributes to keep in sync the host preset browser and plugin preset browser.
+    // If the preset was loaded from a container file, then the load_key must be set, otherwise it
+    // must be null.
+    //
+    // [main-thread]
+    //void(CLAP_ABI *loaded)(const clap_host_t *host, const char *uri, const char *load_key);
+    loaded: procedure(host: Pclap_host; uri, load_key: PAnsiChar); cdecl;
+  end;
+  Pclap_host_preset_load = ^Tclap_host_preset_load;
+
+
+//factory\draft\preset-discovery.h
+
+{
+   Preset Discovery API.
+
+   Preset Discovery enables a plug-in host to identify where presets are found, what
+   extensions they have, which plug-ins they apply to, and other metadata associated with the
+   presets so that they can be indexed and searched for quickly within the plug-in host's browser.
+
+   This has a number of advantages for the user:
+   - it allows them to browse for presets from one central location in a consistent way
+   - the user can browse for presets without having to commit to a particular plug-in first
+
+   The API works as follow to index presets and presets metadata:
+   1. clap_plugin_entry.get_factory(CLAP_PRESET_DISCOVERY_FACTORY_ID)
+   2. clap_preset_discovery_factory_t.create(...)
+   3. clap_preset_discovery_provider.init() (only necessary the first time, declarations
+   can be cached)
+        `-> clap_preset_discovery_indexer.declare_filetype()
+        `-> clap_preset_discovery_indexer.declare_location()
+        `-> clap_preset_discovery_indexer.declare_soundpack() (optional)
+        `-> clap_preset_discovery_indexer.set_invalidation_watch_file() (optional)
+   4. crawl the given locations and monitor file system changes
+        `-> clap_preset_discovery_indexer.get_metadata() for each presets files
+
+   Then to load a preset, use ext/draft/preset-load.h.
+   TODO: create a dedicated repo for other plugin abi preset-load extension.
+
+   The design of this API deliberately does not define a fixed set tags or categories. It is the
+   plug-in host's job to try to intelligently map the raw list of features that are found for a
+   preset and to process this list to generate something that makes sense for the host's tagging and
+   categorization system. The reason for this is to reduce the work for a plug-in developer to add
+   Preset Discovery support for their existing preset file format and not have to be concerned with
+   all the different hosts and how they want to receive the metadata.
+
+   VERY IMPORTANT:
+   - the whole indexing process has to be **fast**
+      - clap_preset_provider->get_metadata() has to be fast and avoid unnecessary operations
+   - the whole indexing process must not be interactive
+      - don't show dialogs, windows, ...
+      - don't ask for user input
+}
+
+// Use it to retrieve const clap_preset_discovery_factory_t* from
+// clap_plugin_entry.get_factory()
+const
+  CLAP_PRESET_DISCOVERY_FACTORY_ID = AnsiString('clap.preset-discovery-factory/draft-1');
+
+  // This is for factory or sound-pack presets.
+  CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT = 1 shl 0;
+
+  // This is for user presets.
+  CLAP_PRESET_DISCOVERY_IS_USER_CONTENT = 1 shl 1;
+
+  // This location is meant for demo presets, those are preset which may trigger
+  // some limitation in the plugin because they require additionnal features which the user
+  // needs to purchase or the content itself needs to be bought and is only available in
+  // demo mode.
+  CLAP_PRESET_DISCOVERY_IS_DEMO_CONTENT = 1 shl 2;
+
+  // This preset is a user's favorite
+  CLAP_PRESET_DISCOVERY_IS_FAVORITE = 1 shl 3;
+
+// TODO: move clap_timestamp_t, CLAP_TIMESTAMP_UNKNOWN and clap_plugin_id_t to parent files once we
+// settle with preset discovery
+// This type defines a timestamp: the number of seconds since UNIX EPOCH.
+// See C's time_t time(time_t *).
+type
+  Tclap_timestamp = uint64_t;
+// Value for unknown timestamp.
+const
+  CLAP_TIMESTAMP_UNKNOWN = 0;
+
+// Pair of plugin ABI and plugin identifier
+type
+  Tclap_plugin_id = record
+    // The plugin ABI name, in lowercase.
+    // eg: "clap"
+    abi: PAnsiChar;
+    // The plugin ID, for example "com.u-he.Diva".
+    // If the ABI rely upon binary plugin ids, then they shall be hex encoded (lower case).
+    id: PAnsiChar;
+  end;
+  Pclap_plugin_id = ^Tclap_plugin_id;
+
+// Receiver that receives the metadata for a single preset file.
+// The host would define the various callbacks in this interface and the preset parser function
+// would then call them.
+//
+// This interface isn't thread-safe.
+type
+  Pclap_preset_discovery_metadata_receiver = ^Tclap_preset_discovery_metadata_receiver;
+  Tclap_preset_discovery_metadata_receiver = record
+    receiver_data: TObject; // reserved pointer for the metadata receiver
+
+    // If there is an error reading metadata from a file this should be called with an error
+    // message.
+    // os_error: the operating system error, if applicable. If not applicable set it to a non-error
+    // value, eg: 0 on unix and Windows.
+    //void(CLAP_ABI *on_error)(const struct clap_preset_discovery_metadata_receiver *receiver,
+    //                         int32_t                                               os_error,
+    //                         const char                                           *error_message);
+    on_error: procedure(receiver: Pclap_preset_discovery_metadata_receiver; os_error: int32_t; error_message: PAnsiChar); cdecl;
+
+    // This must be called for every preset in the file and before any preset metadata is
+    // sent with the calls below.
+    //
+    // If the preset file is a preset container then name and load_key are mandatory,
+    // otherwise they must be null.
+    //
+    // The load_key is a machine friendly string used to load the preset inside the container via a
+    // the preset-load plug-in extension. The load_key can also just be the subpath if that's what the
+    // plugin wants but it could also be some other unique id like a database primary key or a
+    // binary offset. It's use is entirely up to the plug-in.
+    //
+    // If the function returns false, the the provider must stop calling back into the receiver.
+    //bool(CLAP_ABI *begin_preset)(const struct clap_preset_discovery_metadata_receiver *receiver,
+    //                             const char                                           *name,
+    //                             const char                                           *load_key);
+    begin_preset: function(receiver: Pclap_preset_discovery_metadata_receiver; name, load_key: PAnsiChar): boolean; cdecl;
+
+    // Adds a plug-in id that this preset can be used with.
+    //void(CLAP_ABI *add_plugin_id)(const struct clap_preset_discovery_metadata_receiver *receiver,
+    //                              const clap_plugin_id_t                               *plugin_id);
+    add_plugin_id: procedure(receiver: Pclap_preset_discovery_metadata_receiver; plugin_id: Pclap_plugin_id); cdecl;
+
+    // Sets the sound pack to which the preset belongs to.
+    //void(CLAP_ABI *set_soundpack_id)(const struct clap_preset_discovery_metadata_receiver *receiver,
+    //                                  const char *soundpack_id);
+    set_soundpack_id: procedure(receiver: Pclap_preset_discovery_metadata_receiver; soundpack_id: PAnsiChar); cdecl;
+
+    // Sets the flags, see clap_preset_discovery_flags.
+    // If unset, they are then inherited from the location.
+    //void(CLAP_ABI *set_flags)(const struct clap_preset_discovery_metadata_receiver *receiver,
+    //                          uint32_t                                              flags);
+    set_flags: procedure(receiver: Pclap_preset_discovery_metadata_receiver; flags: uint32_t); cdecl;
+
+    // Adds a creator name for the preset.
+    //void(CLAP_ABI *add_creator)(const struct clap_preset_discovery_metadata_receiver *receiver,
+    //                            const char                                           *creator);
+    add_creator: procedure(receiver: Pclap_preset_discovery_metadata_receiver; creator: PAnsiChar); cdecl;
+
+    // Sets a description of the preset.
+    //void(CLAP_ABI *set_description)(const struct clap_preset_discovery_metadata_receiver *receiver,
+    //                                const char *description);
+    set_description: procedure(receiver: Pclap_preset_discovery_metadata_receiver; description: PAnsiChar); cdecl;
+
+    // Sets the creation time and last modification time of the preset.
+    // The timestamps are in seconds since UNIX EPOCH, see C's time_t time(time_t *).
+    // If one of the time isn't known, then set it to CLAP_TIMESTAMP_UNKNOWN.
+    // If this function is not called, then the indexer may look at the file's creation and
+    // modification time.
+    //void(CLAP_ABI *set_timestamps)(const struct clap_preset_discovery_metadata_receiver *receiver,
+    //                               clap_timestamp_t creation_time,
+    //                               clap_timestamp_t modification_time);
+    set_timestamps: procedure(receiver: Pclap_preset_discovery_metadata_receiver; creation_time, modification_time: Tclap_timestamp); cdecl;
+
+    // Adds a feature to the preset.
+    //
+    // The feature string is arbitrary, it is the indexer's job to understand it and remap it to its
+    // internal categorization and tagging system.
+    //
+    // However, the strings from plugin-features.h should be understood by the indexer and one of the
+    // plugin category could be provided to determine if the preset will result into an audio-effect,
+    // instrument, ...
+    //
+    // Examples:
+    // kick, drum, tom, snare, clap, cymbal, bass, lead, metalic, hardsync, crossmod, acid,
+    // distorted, drone, pad, dirty, etc...
+    //void(CLAP_ABI *add_feature)(const struct clap_preset_discovery_metadata_receiver *receiver,
+    //                            const char                                           *feature);
+    add_feature: procedure(receiver: Pclap_preset_discovery_metadata_receiver; feature: PAnsiChar); cdecl;
+
+    // Adds extra information to the metadata.
+    //void(CLAP_ABI *add_extra_info)(const struct clap_preset_discovery_metadata_receiver *receiver,
+    //                               const char                                           *key,
+    //                               const char                                           *value);
+    add_extra_info: procedure(receiver: Pclap_preset_discovery_metadata_receiver; key, value: PAnsiChar); cdecl;
+  end;
+
+  Tclap_preset_discovery_filetype = record
+    name: PAnsiChar;
+    description: PAnsiChar;
+
+    // `.' isn't included in the string.
+    // If empty or NULL then every file should be matched.
+    file_extension: PAnsiChar;
+  end;
+  Pclap_preset_discovery_filetype = ^Tclap_preset_discovery_filetype;
+
+// Defines a place in which to search for presets
+  Tclap_preset_discovery_location = record
+    flags: uint32_t; // see enum clap_preset_discovery_flags
+    name: PAnsiChar;  // name of this location
+
+    // URI
+    // - file:/// for pointing to a file or directory; directories are scanned recursively
+    //   eg: file:///home/abique/.u-he/Diva/Presets/Diva (on Linux)
+    //   eg: file:///C:/Users/abique/Documents/u-he/Diva.data/Presets/ (on Windows)
+    //
+    // - plugin:// for presets which are bundled within the plugin DSO.
+    // In that case, the uri must be exactly `plugin://` and nothing more.
+    uri: PAnsiChar;
+  end;
+  Pclap_preset_discovery_location = ^Tclap_preset_discovery_location;
+
+// Describes an installed sound pack.
+  Tclap_preset_discovery_soundpack = record
+    flags: uint64_t;         // see enum clap_preset_discovery_flags
+    id: PAnsiChar;           // sound pack identifier
+    name: PAnsiChar;         // name of this sound pack
+    description: PAnsiChar;  // reasonably short description of the sound pack
+    homepage_url: PAnsiChar; // url to the pack's homepage
+    vendor: PAnsiChar;       // sound pack's vendor
+    image_uri: PAnsiChar;    // may be an image on disk or from an http server
+    release_timestamp: Tclap_timestamp; // release date, CLAP_TIMESTAMP_UNKNOWN if unavailable
+  end;
+  Pclap_preset_discovery_soundpack = ^Tclap_preset_discovery_soundpack;
+
+// Describes a preset provider
+  Tclap_preset_discovery_provider_descriptor = record
+    clap_version: Tclap_version; // initialized to CLAP_VERSION
+    id: PAnsiChar;           // see plugin.h for advice on how to choose a good identifier
+    name: PAnsiChar;         // eg: "Diva's preset provider"
+    vendor: PAnsiChar;       // eg: u-he
+  end;
+  Pclap_preset_discovery_provider_descriptor = ^Tclap_preset_discovery_provider_descriptor;
+
+// This interface isn't thread-safe.
+  Pclap_preset_discovery_provider = ^Tclap_preset_discovery_provider;
+  Tclap_preset_discovery_provider = record
+    desc: Pclap_preset_discovery_provider_descriptor;
+
+    provider_data: TObject; // reserved pointer for the provider
+
+    // Initialize the preset provider.
+    // It should declare all its locations, filetypes and sound packs.
+    // Returns false if initialization failed.
+    //bool(CLAP_ABI *init)(const struct clap_preset_discovery_provider *provider);
+    init: function(provider: Pclap_preset_discovery_provider): boolean; cdecl;
+
+    // Destroys the preset provider
+    //void(CLAP_ABI *destroy)(const struct clap_preset_discovery_provider *provider);
+    destroy: procedure(provider: Pclap_preset_discovery_provider); cdecl;
+
+    // reads metadata from the given file and passes them to the metadata receiver
+    //bool(CLAP_ABI *get_metadata)(const struct clap_preset_discovery_provider     *provider,
+    //                             const char                                      *uri,
+    //                             const clap_preset_discovery_metadata_receiver_t *metadata_receiver);
+    get_metadata: procedure(provider: Pclap_preset_discovery_provider; uri: PAnsiChar; metadata_receiver: Pclap_preset_discovery_metadata_receiver); cdecl;
+
+    // Query an extension.
+    // The returned pointer is owned by the provider.
+    // It is forbidden to call it before provider->init().
+    // You can call it within provider->init() call, and after.
+    //const void *(CLAP_ABI *get_extension)(const struct clap_preset_discovery_provider *provider,
+    //                                      const char                                  *extension_id);
+    get_extension: function(provider: Pclap_preset_discovery_provider; extension_id: PAnsiChar): pointer; cdecl;
+  end;
+
+// This interface isn't thread-safe
+  Pclap_preset_discovery_indexer = ^Tclap_preset_discovery_indexer;
+  Tclap_preset_discovery_indexer = record
+    clap_version: Tclap_version; // initialized to CLAP_VERSION
+    name: PAnsiChar;         // eg: "Bitwig Studio"
+    vendor: PAnsiChar;       // eg: "Bitwig GmbH"
+    url: PAnsiChar;          // eg: "https://bitwig.com"
+    version: PAnsiChar;      // eg: "4.3", see plugin.h for advice on how to format the version
+
+    indexer_data: TObject; // reserved pointer for the indexer
+
+    // Declares a preset filetype.
+    // Don't callback into the provider during this call.
+    // Returns false if the filetype is invalid.
+    //bool(CLAP_ABI *declare_filetype)(const struct clap_preset_discovery_indexer *indexer,
+    //                                 const clap_preset_discovery_filetype_t     *filetype);
+    declare_filetype: function(indexer: Pclap_preset_discovery_indexer; filetype: Pclap_preset_discovery_filetype): boolean; cdecl;
+
+    // Declares a preset location.
+    // Don't callback into the provider during this call.
+    // Returns false if the location is invalid.
+    //bool(CLAP_ABI *declare_location)(const struct clap_preset_discovery_indexer *indexer,
+    //                                 const clap_preset_discovery_location_t     *location);
+    declare_location: function(indexer: Pclap_preset_discovery_indexer; location: Pclap_preset_discovery_location): boolean; cdecl;
+
+    // Declares a sound pack.
+    // Don't callback into the provider during this call.
+    // Returns false if the sound pack is invalid.
+    //bool(CLAP_ABI *declare_soundpack)(const struct clap_preset_discovery_indexer *indexer,
+    //                                   const clap_preset_discovery_collection_t   *soundpack);
+    declare_soundpack: function(indexer: Pclap_preset_discovery_indexer; soundpack: Pclap_preset_discovery_soundpack): boolean; cdecl;
+
+    // Query an extension.
+    // The returned pointer is owned by the indexer.
+    // It is forbidden to call it before provider->init().
+    // You can call it within provider->init() call, and after.
+    //const void *(CLAP_ABI *get_extension)(const struct clap_preset_discovery_indexer *provider,
+    //                                      const char                                  *extension_id);
+    get_extension: function(indexer: Pclap_preset_discovery_indexer; extension_id: PAnsiChar): pointer; cdecl;
+  end;
+
+// Every methods in this factory must be thread-safe.
+// It is encourraged to perform preset indexing in background threads, maybe even in background
+// process.
+//
+// The host may use clap_plugin_invalidation_factory to detect filesystem changes
+// which may change the factory's content.
+  Pclap_preset_discovery_factory = ^Tclap_preset_discovery_factory;
+  Tclap_preset_discovery_factory = record
+    // Get the number of preset providers available.
+    // [thread-safe]
+    //uint32_t(CLAP_ABI *count)(const struct clap_preset_discovery_factory *factory);
+    count: function(factory: Pclap_preset_discovery_factory): uint32_t; cdecl;
+
+    // Retrieves a preset provider descriptor by its index.
+    // Returns null in case of error.
+    // The descriptor must not be freed.
+    // [thread-safe]
+    //const clap_preset_discovery_provider_descriptor_t *(CLAP_ABI *get_descriptor)(
+    //   const struct clap_preset_discovery_factory *factory, uint32_t index);
+    get_descriptor: function(factory: Pclap_preset_discovery_factory; index: uint32_t): Pclap_preset_discovery_provider_descriptor; cdecl;
+
+    // Create a preset provider by its id.
+    // The returned pointer must be freed by calling preset_provider->destroy(preset_provider);
+    // The preset provider is not allowed to use the indexer callbacks in the create method.
+    // It is forbidden to call back into the indexer before the indexer calls provider->init().
+    // Returns null in case of error.
+    // [thread-safe]
+    //const clap_preset_discovery_provider_t *(CLAP_ABI *create)(
+    //   const struct clap_preset_discovery_factory *factory,
+    //   const clap_preset_indexer_t                *indexer,
+    //   const char                                 *provider_id);
+    create: function(factory: Pclap_preset_discovery_factory; indexer: Pclap_preset_discovery_indexer; provider_id: PAnsiChar): Pclap_preset_discovery_provider; cdecl;
+  end;
 
 
 implementation
