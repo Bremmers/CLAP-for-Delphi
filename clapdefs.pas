@@ -20,7 +20,7 @@ type
 
 // This is the major ABI and API design
 // Version 0.X.Y correspond to the development stage, API and ABI are not stable
-// Version 1.X.Y correspont to the release stage, API and ABI are stable
+// Version 1.X.Y correspond to the release stage, API and ABI are stable
   Tclap_version = record
     major: uint32_t;
     minor: uint32_t;
@@ -30,7 +30,7 @@ type
 const
   CLAP_VERSION_MAJOR = 1;
   CLAP_VERSION_MINOR = 1;
-  CLAP_VERSION_REVISION = 7;
+  CLAP_VERSION_REVISION = 8;
 
   CLAP_VERSION: Tclap_version = (
     major: CLAP_VERSION_MAJOR;
@@ -142,8 +142,8 @@ const
   // cases:
   // - a plugin is inside a drum pad in Bitwig Studio's drum machine, and this pad is choked by
   //   another one
-  // - the user double clicks the DAW's stop button in the transport which then stops the sound on
-  //   every tracks
+  // - the user double-clicks the DAW's stop button in the transport which then stops the sound on
+  //   every track
   //
   // NOTE_END is sent by the plugin to the host. The port, channel, key and note_id are those given
   // by the host in the NOTE_ON event. In other words, this event is matched against the
@@ -310,7 +310,7 @@ type
     song_pos_seconds: Tclap_sectime; // position in seconds
 
     tempo: double;     // in bpm
-    tempo_inc: double; // tempo increment for each samples and until the next
+    tempo_inc: double; // tempo increment for each sample and until the next
                        // time info event
 
     loop_start_beats: Tclap_beattime;
@@ -350,7 +350,7 @@ type
     data: array[0..3] of uint32_t;
   end;
 
-// Input event list, events must be sorted by time.
+// Input event list. The host will deliver these sorted in sample order.
   Pclap_input_events = ^Tclap_input_events;
   Tclap_input_events = record
     ctx: TObject; // reserved pointer for the list
@@ -364,7 +364,7 @@ type
     get: function(list: Pclap_input_events; index: uint32_t): Pclap_event_header; cdecl;
   end;
 
-// Output event list, events must be sorted by time.
+// Output event list. The plugin must insert events in sample sorted order when inserting events
   Pclap_output_events = ^Tclap_output_events;
   Tclap_output_events = record
     ctx: TObject; // reserved pointer for the list
@@ -454,11 +454,11 @@ type
     audio_inputs_count: uint32_t;
     audio_outputs_count: uint32_t;
 
-    // Input and output events.
-    //
-    // Events must be sorted by time.
     // The input event list can't be modified.
+    // Input read-only event list. The host will deliver these sorted in sample order.
     in_events: Pclap_input_events;
+
+    // Output event list. The plugin must insert events in sample sorted order when inserting events
     out_events: Pclap_output_events;
   end;
   Pclap_process = ^Tclap_process;
@@ -518,7 +518,7 @@ type
     // Otherwise the fields can be null or blank, though it is safer to make them blank.
     //
     // Some indications regarding id and version
-    // - id is an arbritrary string which should be unique to your plugin,
+    // - id is an arbitrary string which should be unique to your plugin,
     //   we encourage you to use a reverse URI eg: "com.u-he.diva"
     // - version is an arbitrary string which describes a plugin,
     //   it is useful for the host to understand and be able to compare two different
@@ -586,7 +586,7 @@ type
     stop_processing: procedure(plugin: Pclap_plugin); cdecl;
 
     // - Clears all buffers, performs a full reset of the processing state (filters, oscillators,
-    //   enveloppes, lfo, ...) and kills all voices.
+    //   envelopes, lfo, ...) and kills all voices.
     // - The parameter's value remain unchanged.
     // - clap_process.steady_time may jump backward.
     //
@@ -625,7 +625,7 @@ type
 // For practical reasons we'll avoid spaces and use `-` instead to facilitate
 // scripts that generate the feature array.
 //
-// Non standard features should be formated as follow: "$namespace:$feature"
+// Non-standard features should be formatted as follow: "$namespace:$feature"
 
 const
 
@@ -669,6 +669,8 @@ const
   CLAP_PLUGIN_FEATURE_DISTORTION = 'distortion';
   CLAP_PLUGIN_FEATURE_TRANSIENT_SHAPER = 'transient-shaper';
   CLAP_PLUGIN_FEATURE_COMPRESSOR = 'compressor';
+  CLAP_PLUGIN_FEATURE_EXPANDER = 'expander';
+  CLAP_PLUGIN_FEATURE_GATE = 'gate';
   CLAP_PLUGIN_FEATURE_LIMITER = 'limiter';
 
   CLAP_PLUGIN_FEATURE_FLANGER = 'flanger';
@@ -847,6 +849,18 @@ const
 
 //stream.h
 
+/// @page Streams
+///
+/// ## Notes on using streams
+///
+/// When working with `clap_istream` and `clap_ostream` objects to load and save
+/// state, it is important to keep in mind that the host may limit the number of
+/// bytes that can be read or written at a time. The return values for the
+/// stream read and write functions indicate how many bytes were actually read
+/// or written. You need to use a loop to ensure that you read or write the
+/// entirety of your state. Don't forget to also consider the negative return
+/// values for the end of file and IO error codes.
+
 type
   Pclap_istream = ^Tclap_istream;
   Tclap_istream = record
@@ -964,7 +978,7 @@ type
     is_api_supported: function(plugin: Pclap_plugin; api: PAnsiChar; is_floating: boolean): boolean; cdecl;
 
     // Returns true if the plugin has a preferred api.
-    // The host has no obligation to honor the plugin preferrence, this is just a hint.
+    // The host has no obligation to honor the plugin preference, this is just a hint.
     // The const char **api variable should be explicitly assigned as a pointer to
     // one of the CLAP_WINDOW_API_ constants defined above, not strcopied.
     // [main-thread]
@@ -977,10 +991,12 @@ type
     // can set its window to stays above the parent window, see set_transient().
     // api may be null or blank for floating window.
     //
-    // If is_floating is false, then the plugin has to embbed its window into the parent window, see
+    // If is_floating is false, then the plugin has to embed its window into the parent window, see
     // set_parent().
     //
     // After this call, the GUI may not be visible yet; don't forget to call show().
+    //
+    // Returns true if the GUI is successfuly created.
     // [main-thread]
     //bool (*create)(const clap_plugin_t *plugin, const char *api, bool is_floating);
     create: function(plugin: Pclap_plugin; api: PAnsiChar; is_floating: boolean): boolean; cdecl;
@@ -996,6 +1012,8 @@ type
     // If the plugin prefers to work out the scaling factor itself by querying the OS directly,
     // then ignore the call.
     //
+    // scale = 2 means 200% scaling.
+    //
     // Returns true if the scaling could be applied
     // Returns false if the call was ignored, or the scaling could not be applied.
     // [main-thread]
@@ -1004,6 +1022,8 @@ type
 
     // Get the current size of the plugin UI.
     // clap_plugin_gui->create() must have been called prior to asking the size.
+    //
+    // Returns true if the plugin could get the size.
     // [main-thread]
     //bool (*get_size)(const clap_plugin_t *plugin, uint32_t *width, uint32_t *height);
     get_size: function(plugin: Pclap_plugin; var width: uint32_t; var height: uint32_t): boolean; cdecl;
@@ -1024,37 +1044,50 @@ type
     // This method does not change the size.
     //
     // Only for embedded windows.
+    //
+    // Returns true if the plugin could adjust the given size.
     // [main-thread]
     //bool (*adjust_size)(const clap_plugin_t *plugin, uint32_t *width, uint32_t *height);
     adjust_size: function(plugin: Pclap_plugin; var width: uint32_t; var height: uint32_t): boolean; cdecl;
 
     // Sets the window size. Only for embedded windows.
+    //
+    // Returns true if the plugin could resize its window to the given size.
     // [main-thread]
     //bool (*set_size)(const clap_plugin_t *plugin, uint32_t width, uint32_t height);
     set_size: function(plugin: Pclap_plugin; width: uint32_t; height: uint32_t): boolean; cdecl;
 
     // Embbeds the plugin window into the given window.
+    //
+    // Returns true on success.
     // [main-thread & !floating]
     //bool (*set_parent)(const clap_plugin_t *plugin, const clap_window_t *window);
     set_parent: function(plugin: Pclap_plugin; window: Pclap_window): boolean; cdecl;
 
     // Set the plugin floating window to stay above the given window.
+    //
+    // Returns true on success.
     // [main-thread & floating]
     //bool (*set_transient)(const clap_plugin_t *plugin, const clap_window_t *window);
     set_transient: function(plugin: Pclap_plugin; window: Pclap_window): boolean; cdecl;
 
     // Suggests a window title. Only for floating windows.
+    //
     // [main-thread & floating]
     //void (*suggest_title)(const clap_plugin_t *plugin, const char *title);
     suggest_title: procedure(plugin: Pclap_plugin; title: PAnsiChar); cdecl;
 
     // Show the window.
+    //
+    // Returns true on success.
     // [main-thread]
     //bool (*show)(const clap_plugin_t *plugin);
     show: function(plugin: Pclap_plugin): boolean; cdecl;
 
     // Hide the window, this method does not free the resources, it just hides
     // the window content. Yet it may be a good idea to stop painting timers.
+    //
+    // Returns true on success.
     // [main-thread]
     //bool (*hide)(const clap_plugin_t *plugin);
     hide: function(plugin: Pclap_plugin): boolean; cdecl;
@@ -1130,6 +1163,14 @@ type
 
 
 //state.h
+
+/// @page State
+/// @brief state management
+///
+/// Plugins can implement this extension to save and restore both parameter
+/// values and non-parameter state. This is used to persist a plugin's state
+/// between project reloads, when duplicating and copying plugin instances, and
+/// for host-side preset management.
 
 const
   CLAP_EXT_STATE = AnsiString('clap.state');
@@ -1356,8 +1397,8 @@ type
 
 /// @page Audio Ports Config
 ///
-/// This extension provides a way for the plugin to describe possible port configurations, for
-/// example mono, stereo, surround, ... and a way for the host to select a configuration.
+/// This extension let the plugin provide port configurations presets.
+/// For example mono, stereo, surround, ambisonic, ...
 ///
 /// After the plugin initialization, the host may scan the list of configurations and eventually
 /// select one that fits the plugin context. The host can only select a configuration if the plugin
@@ -1427,7 +1468,7 @@ type
     // [main-thread]
     //clap_id(CLAP_ABI *current_config)(const clap_plugin_t *plugin);
     current_config: function(plugin: Pclap_plugin): Tclap_id; cdecl;
-    // Get info about about an audio port, for a given config_id.
+    // Get info about an audio port, for a given config_id.
     // This is analogous to clap_plugin_audio_ports.get().
     // [main-thread]
     //bool(CLAP_ABI *get)(const clap_plugin_t    *plugin,
@@ -1540,7 +1581,7 @@ type
 ///
 /// When the plugin changes a parameter value, it must inform the host.
 /// It will send @ref CLAP_EVENT_PARAM_VALUE event during process() or flush().
-/// If the user is adjusting the value, don't forget to mark the begining and end
+/// If the user is adjusting the value, don't forget to mark the beginning and end
 /// of the gesture by sending CLAP_EVENT_PARAM_GESTURE_BEGIN and CLAP_EVENT_PARAM_GESTURE_END
 /// events.
 ///
@@ -1574,8 +1615,9 @@ type
 /// - the plugin is responsible for sending the parameter value to its audio processor
 /// - call clap_host_params->request_flush() or clap_host->request_process().
 /// - when the host calls either clap_plugin->process() or clap_plugin_params->flush(),
-///   send an automation event and don't forget to set begin_adjust,
-///   end_adjust and should_record flags
+///   send an automation event and don't forget to wrap the parameter change(s)
+///   with CLAP_EVENT_PARAM_GESTURE_BEGIN and CLAP_EVENT_PARAM_GESTURE_END to define the
+///   beginning and end of the gesture.
 ///
 /// IV. Turning a knob via automation
 /// - host sends an automation point during clap_plugin->process() or clap_plugin_params->flush().
@@ -1593,7 +1635,7 @@ type
 ///     call clap_host_params.clear(host, param_id, CLAP_PARAM_CLEAR_ALL)
 ///   - call clap_host_params->rescan(CLAP_PARAM_RESCAN_ALL)
 ///
-/// CLAP allows the plugin to change the parameter range, yet the plugin developper
+/// CLAP allows the plugin to change the parameter range, yet the plugin developer
 /// should be aware that doing so isn't without risk, especially if you made the
 /// promise to never change the sound. If you want to be 100% certain that the
 /// sound will not change with all host, then simply never change the range.
@@ -1608,7 +1650,7 @@ type
 /// should be stored as plain value in the document.
 ///
 /// If the host goes with the first approach, there will still be situation where the
-/// sound may innevitably change. For example, if the plugin increase the range, there
+/// sound may inevitably change. For example, if the plugin increase the range, there
 /// is an automation playing at the max value and on top of that an LFO is applied.
 /// See the following curve:
 ///                                   .
@@ -1616,15 +1658,29 @@ type
 ///          .....                  .   .
 /// before: .     .     and after: .     .
 ///
+/// Persisting parameter values:
+///
+/// Plugins are responsible for persisting their parameter's values between
+/// sessions by implementing the state extension. Otherwise parameter value will
+/// not be recalled when reloading a project. Hosts should _not_ try to save and
+/// restore parameter values for plugins that don't implement the state
+/// extension.
+///
 /// Advice for the host:
+///
 /// - store plain values in the document (automation)
 /// - store modulation amount in plain value delta, not in percentage
 /// - when you apply a CC mapping, remember the min/max plain values so you can adjust
+/// - do not implement a parameter saving fall back for plugins that don't
+///   implement the state extension
 ///
 /// Advice for the plugin:
+///
 /// - think carefully about your parameter range when designing your DSP
 /// - avoid shrinking parameter ranges, they are very likely to change the sound
 /// - consider changing the parameter range as a tradeoff: what you improve vs what you break
+/// - make sure to implement saving and loading the parameter values using the
+///   state extension
 /// - if you plan to use adapters for other plugin formats, then you need to pay extra
 ///   attention to the adapter requirements
 
@@ -1635,7 +1691,7 @@ const
   // if so the double value is converted to integer using a cast (equivalent to trunc).
   CLAP_PARAM_IS_STEPPED = 1 shl 0;
 
-  // Useful for for periodic parameters like a phase
+  // Useful for periodic parameters like a phase
   CLAP_PARAM_IS_PERIODIC = 1 shl 1;
 
   // The parameter should not be shown to the user, because it is currently not used.
@@ -1707,7 +1763,7 @@ type
     flags: Tclap_param_info_flags;
 
     // This value is optional and set by the plugin.
-    // Its purpose is to provide a fast access to the plugin parameter object by caching its pointer.
+    // Its purpose is to provide fast access to the plugin parameter object by caching its pointer.
     // For instance:
     //
     // in clap_plugin_params.get_info():
@@ -1914,7 +1970,7 @@ type
     // Informs the host that the note names have changed.
     // [main-thread]
     //void (*changed)(const clap_host_t *host);
-    changed: procedure(host: Pclap_host); cdecl
+    changed: procedure(host: Pclap_host); cdecl;
   end;
   Pclap_host_note_name = ^Tclap_host_note_name;
 
@@ -1990,7 +2046,7 @@ type
 // If this information does not influence your rendering code, then don't
 // implement this extension.
   Tclap_plugin_render = record
-    // Returns true if the plugin has an hard requirement to process in real-time.
+    // Returns true if the plugin has a hard requirement to process in real-time.
     // This is especially useful for plugin acting as a proxy to an hardware device.
     // [main-thread]
     //bool (*has_hard_realtime_requirement)(const clap_plugin_t *plugin);
@@ -2015,6 +2071,9 @@ const
 /// main-thread:
 ///    This is the thread in which most of the interaction between the plugin and host happens.
 ///    It is usually the thread on which the GUI receives its events.
+///    This will be the same OS thread throughout the lifetime of the plug-in.
+///    On macOS and Windows, this must be the thread on which gui and timer events are received
+///    (i.e., the main thread of the program).
 ///    It isn't a realtime thread, yet this thread needs to respond fast enough to user interaction,
 ///    so it is recommended to run long and expensive tasks such as preset indexing or asset loading
 ///    in dedicated background threads.
@@ -2029,7 +2088,7 @@ const
 ///    thread pool and the plugin.process() call may be scheduled on different OS threads over time.
 ///    The most important thing is that there can't be two audio-threads at the same time. All the
 ///    functions marked with [audio-thread] **ARE NOT CONCURRENT**. The host may mark any OS thread,
-///    including the main-thread as the audio-thread, as long as it can guarentee that only one OS
+///    including the main-thread as the audio-thread, as long as it can guarantee that only one OS
 ///    thread is the audio-thread at a time. The audio-thread can be seen as a concurrency guard for
 ///    all functions marked with [audio-thread].
 
@@ -2198,7 +2257,7 @@ type
     perform: function(host: Pclap_host; target: Pclap_context_menu_target; action_id: Tclap_id): boolean; cdecl;
 
     // Returns true if the host can display a popup menu for the plugin.
-    // This may depends upon the current windowing system used to display the plugin, so the
+    // This may depend upon the current windowing system used to display the plugin, so the
     // return value is invalidated after creating the plugin window.
     // [main-thread]
     //bool(CLAP_ABI *can_popup)(const clap_host_t *host);
@@ -2246,7 +2305,7 @@ const
   // The host is recording an automation on this parameter
   CLAP_PARAM_INDICATION_AUTOMATION_RECORDING = 3;
 
-  // The host should play an automation for this parameter, but the user has started to ajust this
+  // The host should play an automation for this parameter, but the user has started to adjust this
   // parameter and is overriding the automation playback
   CLAP_PARAM_INDICATION_AUTOMATION_OVERRIDING = 4;
 
@@ -2354,7 +2413,7 @@ type
     //void(CLAP_ABI *changed)(const clap_host_t *host);
     changed: procedure(host: Pclap_host); cdecl;
 
-    // Suggest a page to the host because it correspond to what the user is currently editing in the
+    // Suggest a page to the host because it corresponds to what the user is currently editing in the
     // plugin's GUI.
     // [main-thread]
     //void(CLAP_ABI *suggest_page)(const clap_host_t *host, clap_id page_id);
@@ -2365,9 +2424,9 @@ type
 
 //ext\draft\track-info.h
 
-// This extensions let the plugin query info about the track it's in.
+// This extension let the plugin query info about the track it's in.
 // It is useful when the plugin is created, to initialize some parameters (mix, dry, wet)
-// and pick a suitable configuartion regarding audio port type and channel count.
+// and pick a suitable configuration regarding audio port type and channel count.
 const
   CLAP_EXT_TRACK_INFO = AnsiString('clap.track-info.draft/1');
   CLAP_TRACK_INFO_HAS_TRACK_NAME = 1 shl 0;
@@ -2387,7 +2446,7 @@ type
     name: array[0..CLAP_NAME_SIZE - 1] of byte;
     // track color, available if flags contain CLAP_TRACK_INFO_HAS_TRACK_COLOR
     color: Tclap_color;
-    // availabe if flags contain CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL
+    // available if flags contain CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL
     // see audio-ports.h, struct clap_audio_port_info to learn how to use channel count and port type
     audio_channel_count: int32_t;
     audio_port_type: PAnsiChar;
@@ -2484,19 +2543,19 @@ type
 //ext\draft\preset-load.h
 
 const
-  CLAP_EXT_PRESET_LOAD = AnsiString('clap.preset-load.draft/1');
+  CLAP_EXT_PRESET_LOAD = AnsiString('clap.preset-load.draft/2');
 
 type
   Tclap_plugin_preset_load = record
-    // Loads a preset in the plugin native preset file format from a URI. eg:
-    // - "file:///home/abique/.u-he/Diva/Presets/Diva/HS Bass Nine.h2p", load_key: null
-    // - "plugin://<plugin-id>", load_key: <XXX>
-    //
-    // The preset discovery provider defines the uriand load_key to be passed to this function.
+    // Loads a preset in the plugin native preset file format from a location.
+    // The preset discovery provider defines the location and load_key to be passed to this function.
     //
     // [main-thread]
-    //bool(CLAP_ABI *from_uri)(const clap_plugin_t *plugin, const char *uri, const char *load_key);
-    from_uri: function(plugin: Pclap_plugin; uri, load_key: PAnsiChar): boolean; cdecl;
+    //bool(CLAP_ABI *from_location)(const clap_plugin_t *plugin,
+    //                              uint32_t             location_kind,
+    //                              const char          *location,
+    //                              const char          *load_key);
+    from_location: function(plugin: Pclap_plugin; location_kind: uint32_t; location, load_key: PAnsiChar): boolean; cdecl;
   end;
   Pclap_plugin_preset_load = ^Tclap_plugin_preset_load;
 
@@ -2507,10 +2566,12 @@ type
     //
     // [main-thread]
     //void(CLAP_ABI *on_error)(const clap_host_t *host,
-    //                         const char          *uri,
-    //                         int32_t              os_error,
-    //                         const char          *msg);
-    on_error: procedure(host: Pclap_host; uri: PansiChar; os_error: int32_t; msg: PAnsiChar); cdecl;
+    //                         uint32_t           location_kind,
+    //                         const char        *location,
+    //                         const char        *load_key,
+    //                         int32_t            os_error,
+    //                         const char        *msg);
+    on_error: procedure(host: Pclap_host; location_kind: uint32_t; location, load_key: PAnsiChar; os_error: int32_t; msg: PAnsiChar); cdecl;
 
     // Informs the host that the following preset has been loaded.
     // This contributes to keep in sync the host preset browser and plugin preset browser.
@@ -2518,8 +2579,11 @@ type
     // must be null.
     //
     // [main-thread]
-    //void(CLAP_ABI *loaded)(const clap_host_t *host, const char *uri, const char *load_key);
-    loaded: procedure(host: Pclap_host; uri, load_key: PAnsiChar); cdecl;
+    //void(CLAP_ABI *loaded)(const clap_host_t *host,
+    //                       uint32_t           location_kind,
+    //                       const char        *location,
+    //                       const char        *load_key);
+    loaded: procedure(host: Pclap_host; location_kind: uint32_t; location, load_key: PAnsiChar); cdecl;
   end;
   Pclap_host_preset_load = ^Tclap_host_preset_load;
 
@@ -2570,7 +2634,18 @@ type
 // Use it to retrieve const clap_preset_discovery_factory_t* from
 // clap_plugin_entry.get_factory()
 const
-  CLAP_PRESET_DISCOVERY_FACTORY_ID = AnsiString('clap.preset-discovery-factory/draft-1');
+  CLAP_PRESET_DISCOVERY_FACTORY_ID = AnsiString('clap.preset-discovery-factory/draft-2');
+
+  // The preset are located in a file on the OS filesystem.
+  // The location is then a path which works with the OS file system functions (open, stat, ...)
+  // So both '/' and '\' shall work on Windows as a separator.
+  CLAP_PRESET_DISCOVERY_LOCATION_FILE = 0;
+
+  // The preset is bundled within the plugin DSO itself.
+  // The location must then be null, as the preset are within the plugin itsel and then the plugin
+  // will act as a preset container.
+  CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN = 1;
+
 
   // This is for factory or sound-pack presets.
   CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT = 1 shl 0;
@@ -2579,7 +2654,7 @@ const
   CLAP_PRESET_DISCOVERY_IS_USER_CONTENT = 1 shl 1;
 
   // This location is meant for demo presets, those are preset which may trigger
-  // some limitation in the plugin because they require additionnal features which the user
+  // some limitation in the plugin because they require additional features which the user
   // needs to purchase or the content itself needs to be bought and is only available in
   // demo mode.
   CLAP_PRESET_DISCOVERY_IS_DEMO_CONTENT = 1 shl 2;
@@ -2631,8 +2706,8 @@ type
     // This must be called for every preset in the file and before any preset metadata is
     // sent with the calls below.
     //
-    // If the preset file is a preset container then name and load_key are mandatory,
-    // otherwise they must be null.
+    // If the preset file is a preset container then name and load_key are mandatory, otherwise
+    // they are optional.
     //
     // The load_key is a machine friendly string used to load the preset inside the container via a
     // the preset-load plug-in extension. The load_key can also just be the subpath if that's what the
@@ -2706,7 +2781,7 @@ type
 
   Tclap_preset_discovery_filetype = record
     name: PAnsiChar;
-    description: PAnsiChar;
+    description: PAnsiChar; // optional
 
     // `.' isn't included in the string.
     // If empty or NULL then every file should be matched.
@@ -2716,29 +2791,26 @@ type
 
 // Defines a place in which to search for presets
   Tclap_preset_discovery_location = record
-    flags: uint32_t; // see enum clap_preset_discovery_flags
-    name: PAnsiChar;  // name of this location
+    flags: uint32_t;     // see enum clap_preset_discovery_flags
+    name: PAnsiChar;     // name of this location
+    kind: uint32_t;      // See clap_preset_discovery_location_kind
 
-    // URI
-    // - file:/// for pointing to a file or directory; directories are scanned recursively
-    //   eg: file:///home/abique/.u-he/Diva/Presets/Diva (on Linux)
-    //   eg: file:///C:/Users/abique/Documents/u-he/Diva.data/Presets/ (on Windows)
-    //
-    // - plugin:// for presets which are bundled within the plugin DSO.
-    // In that case, the uri must be exactly `plugin://` and nothing more.
-    uri: PAnsiChar;
+    // Actual location in which to crawl presets.
+    // For FILE kind, the location can be either a path to a directory or a file.
+    // For PLUGIN kind, the location must be null.
+   	location: PAnsiChar; // Actual location in which to crawl presets
   end;
   Pclap_preset_discovery_location = ^Tclap_preset_discovery_location;
 
 // Describes an installed sound pack.
   Tclap_preset_discovery_soundpack = record
-    flags: uint64_t;         // see enum clap_preset_discovery_flags
+    flags: uint32_t;         // see enum clap_preset_discovery_flags
     id: PAnsiChar;           // sound pack identifier
     name: PAnsiChar;         // name of this sound pack
-    description: PAnsiChar;  // reasonably short description of the sound pack
-    homepage_url: PAnsiChar; // url to the pack's homepage
-    vendor: PAnsiChar;       // sound pack's vendor
-    image_uri: PAnsiChar;    // may be an image on disk or from an http server
+    description: PAnsiChar;  // optional, reasonably short description of the sound pack
+    homepage_url: PAnsiChar; // optional, url to the pack's homepage
+    vendor: PAnsiChar;       // optional, sound pack's vendor
+    image_path: PAnsiChar;   // optional, an image on disk
     release_timestamp: Tclap_timestamp; // release date, CLAP_TIMESTAMP_UNKNOWN if unavailable
   end;
   Pclap_preset_discovery_soundpack = ^Tclap_preset_discovery_soundpack;
@@ -2748,7 +2820,7 @@ type
     clap_version: Tclap_version; // initialized to CLAP_VERSION
     id: PAnsiChar;           // see plugin.h for advice on how to choose a good identifier
     name: PAnsiChar;         // eg: "Diva's preset provider"
-    vendor: PAnsiChar;       // eg: u-he
+    vendor: PAnsiChar;       // optional, eg: u-he
   end;
   Pclap_preset_discovery_provider_descriptor = ^Tclap_preset_discovery_provider_descriptor;
 
@@ -2771,9 +2843,10 @@ type
 
     // reads metadata from the given file and passes them to the metadata receiver
     //bool(CLAP_ABI *get_metadata)(const struct clap_preset_discovery_provider     *provider,
-    //                             const char                                      *uri,
+    //                             uint32_t                                         location_kind,
+    //                             const char                                      *location,
     //                             const clap_preset_discovery_metadata_receiver_t *metadata_receiver);
-    get_metadata: procedure(provider: Pclap_preset_discovery_provider; uri: PAnsiChar; metadata_receiver: Pclap_preset_discovery_metadata_receiver); cdecl;
+    get_metadata: procedure(provider: Pclap_preset_discovery_provider; location_kind: uint32_t; location: PAnsiChar; metadata_receiver: Pclap_preset_discovery_metadata_receiver); cdecl;
 
     // Query an extension.
     // The returned pointer is owned by the provider.
@@ -2789,9 +2862,9 @@ type
   Tclap_preset_discovery_indexer = record
     clap_version: Tclap_version; // initialized to CLAP_VERSION
     name: PAnsiChar;         // eg: "Bitwig Studio"
-    vendor: PAnsiChar;       // eg: "Bitwig GmbH"
-    url: PAnsiChar;          // eg: "https://bitwig.com"
-    version: PAnsiChar;      // eg: "4.3", see plugin.h for advice on how to format the version
+    vendor: PAnsiChar;       // eg: optional, "Bitwig GmbH"
+    url: PAnsiChar;          // eg: optional, "https://bitwig.com"
+    version: PAnsiChar;      // eg: optional, "4.3", see plugin.h for advice on how to format the version
 
     indexer_data: TObject; // reserved pointer for the indexer
 
@@ -2813,7 +2886,7 @@ type
     // Don't callback into the provider during this call.
     // Returns false if the sound pack is invalid.
     //bool(CLAP_ABI *declare_soundpack)(const struct clap_preset_discovery_indexer *indexer,
-    //                                   const clap_preset_discovery_collection_t   *soundpack);
+    //                                  const clap_preset_discovery_collection_t   *soundpack);
     declare_soundpack: function(indexer: Pclap_preset_discovery_indexer; soundpack: Pclap_preset_discovery_soundpack): boolean; cdecl;
 
     // Query an extension.
@@ -2826,7 +2899,7 @@ type
   end;
 
 // Every methods in this factory must be thread-safe.
-// It is encourraged to perform preset indexing in background threads, maybe even in background
+// It is encouraged to perform preset indexing in background threads, maybe even in background
 // process.
 //
 // The host may use clap_plugin_invalidation_factory to detect filesystem changes
@@ -2858,7 +2931,6 @@ type
     //   const char                                 *provider_id);
     create: function(factory: Pclap_preset_discovery_factory; indexer: Pclap_preset_discovery_indexer; provider_id: PAnsiChar): Pclap_preset_discovery_provider; cdecl;
   end;
-
 
 implementation
 
