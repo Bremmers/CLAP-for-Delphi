@@ -30,7 +30,7 @@ type
 const
   CLAP_VERSION_MAJOR = 1;
   CLAP_VERSION_MINOR = 1;
-  CLAP_VERSION_REVISION = 8;
+  CLAP_VERSION_REVISION = 9;
 
   CLAP_VERSION: Tclap_version = (
     major: CLAP_VERSION_MAJOR;
@@ -826,6 +826,8 @@ type
     //
     // If init() returns false, then the host must not call deinit() nor any other clap
     // related symbols from the DSO.
+    //
+    // plugin_path is the path to the DSO (Linux, Windows), or the bundle (macOS).
     //bool (*init)(const char *plugin_path);
     init: function (plugin_path: PAnsiChar): boolean; cdecl;
 
@@ -996,7 +998,7 @@ type
     //
     // After this call, the GUI may not be visible yet; don't forget to call show().
     //
-    // Returns true if the GUI is successfuly created.
+    // Returns true if the GUI is successfully created.
     // [main-thread]
     //bool (*create)(const clap_plugin_t *plugin, const char *api, bool is_floating);
     create: function(plugin: Pclap_plugin; api: PAnsiChar; is_floating: boolean): boolean; cdecl;
@@ -1030,12 +1032,12 @@ type
 
     // Returns true if the window is resizeable (mouse drag).
     // Only for embedded windows.
-    // [main-thread]
+    // [main-thread & !floating]
     //bool (*can_resize)(const clap_plugin_t *plugin);
     can_resize: function(plugin: Pclap_plugin): boolean; cdecl;
 
     // Returns true if the plugin can provide hints on how to resize the window.
-    // [main-thread]
+    // [main-thread & !floating]
     //bool (*get_resize_hints)(const clap_plugin_t *plugin, clap_gui_resize_hints_t *hints);
     get_resize_hints: function(plugin: Pclap_plugin; var hints: Tclap_gui_resize_hints): boolean; cdecl;
 
@@ -1046,14 +1048,14 @@ type
     // Only for embedded windows.
     //
     // Returns true if the plugin could adjust the given size.
-    // [main-thread]
+    // [main-thread & !floating]
     //bool (*adjust_size)(const clap_plugin_t *plugin, uint32_t *width, uint32_t *height);
     adjust_size: function(plugin: Pclap_plugin; var width: uint32_t; var height: uint32_t): boolean; cdecl;
 
     // Sets the window size. Only for embedded windows.
     //
     // Returns true if the plugin could resize its window to the given size.
-    // [main-thread]
+    // [main-thread & !floating]
     //bool (*set_size)(const clap_plugin_t *plugin, uint32_t width, uint32_t height);
     set_size: function(plugin: Pclap_plugin; width: uint32_t; height: uint32_t): boolean; cdecl;
 
@@ -1096,7 +1098,7 @@ type
 
   clap_host_gui = record
     // The host should call get_resize_hints() again.
-    // [thread-safe]
+    // [thread-safe & !floating]
     //void (*resize_hints_changed)(const clap_host_t *host);
     resize_hints_changed: procedure(host: Pclap_host); cdecl;
 
@@ -1108,7 +1110,7 @@ type
     // acknowledged the request and will process it asynchronously. If the request then can't be
     // satisfied then the host will call set_size() to revert the operation.
     //
-    // [thread-safe] */
+    // [thread-safe & !floating] */
     //bool (*resize)(const clap_host_t *host, uint32_t width, uint32_t height);
     request_resize: function(host: Pclap_host; width: uint32_t; height: uint32_t): boolean; cdecl;
 
@@ -1308,10 +1310,10 @@ const
   // 64 bits audio is preferred with this port
   CLAP_AUDIO_PORTS_PREFERS_64BITS = 1 shl 2;
 
-   // This port must be used with the same sample size as all the other ports which have this flag.
-   // In other words if all ports have this flag then the plugin may either be used entirely with
-   // 64 bits audio or 32 bits audio, but it can't be mixed.
-   CLAP_AUDIO_PORT_REQUIRES_COMMON_SAMPLE_SIZE = 1 shl 3;
+  // This port must be used with the same sample size as all the other ports which have this flag.
+  // In other words if all ports have this flag then the plugin may either be used entirely with
+  // 64 bits audio or 32 bits audio, but it can't be mixed.
+  CLAP_AUDIO_PORT_REQUIRES_COMMON_SAMPLE_SIZE = 1 shl 3;
 
 type
   Tclap_audio_port_info = record
@@ -1324,7 +1326,7 @@ type
     channel_count: uint32_t;
 
     // If null or empty then it is unspecified (arbitrary audio).
-    // This filed can be compared against:
+    // This field can be compared against:
     // - CLAP_PORT_MONO
     // - CLAP_PORT_STEREO
     // - CLAP_PORT_SURROUND (defined in the surround extension)
@@ -1486,6 +1488,49 @@ type
     rescan: procedure(host: Pclap_host); cdecl;
   end;
   Pclap_host_audio_ports_config = ^Tclap_host_audio_ports_config;
+
+//ext\draft\configurable-audio-ports.h
+
+// This extension lets the host configure the plugin's input and output audio ports
+
+const
+  CLAP_EXT_CONFIGURABLE_AUDIO_PORTS = AnsiString('clap.configurable-audio-ports.draft1');
+
+type
+  Tclap_audio_port_configuration_request = record
+    // Identifies the port by is_input and port_index
+    is_input: boolean;
+    port_index: uint32_t;
+
+    // The requested number of channels.
+    channel_count: uint32_t;
+
+    // The port type, see audio-ports.h, clap_audio_port_info.port_type for interpretation.
+    port_type: PAnsiChar;
+
+    // cast port_details according to port_type:
+    // - CLAP_PORT_MONO: (discard)
+    // - CLAP_PORT_STEREO: (discard)
+    // - CLAP_PORT_SURROUND: const uint8_t *channel_map
+    // - CLAP_PORT_AMBISONIC: const clap_ambisonic_config_t *info
+    port_details: pointer;
+  end;
+  Pclap_audio_port_configuration_request = ^Tclap_audio_port_configuration_request;
+
+  Tclap_plugin_configurable_audio_ports = record
+    // If is_dry_run is true, then checks if the configuration can be applied.
+    // If is_dry_run is false, then applies the configuration.
+    // Returns true if applied.
+    // [main-thread && !active]
+    //bool(CLAP_ABI *apply_configuration)(
+    // const clap_plugin_t                                *plugin,
+    // const struct clap_audio_port_configuration_request *requests,
+    // uint32_t request_count,
+    // bool is_dry_run);
+    apply_configuration: function(plugin: Pclap_plugin; requests: Pclap_audio_port_configuration_request; request_count: uint32_t; is_dry_run: boolean): boolean; cdecl;
+  end;
+  Pclap_plugin_configurable_audio_ports = ^Tclap_plugin_configurable_audio_ports;
+
 
 //ext\note-ports.h
 
@@ -1983,7 +2028,7 @@ const
 // The audio ports scan has to be done while the plugin is deactivated.
 type
   Tclap_plugin_latency = record
-    // Returns the plugin latency.
+    // Returns the plugin latency in samples.
     // [main-thread]
     //uint32_t (*get)(const clap_plugin_t *plugin);
     get: function(plugin: Pclap_plugin): uint32_t; cdecl;
@@ -2642,7 +2687,7 @@ const
   CLAP_PRESET_DISCOVERY_LOCATION_FILE = 0;
 
   // The preset is bundled within the plugin DSO itself.
-  // The location must then be null, as the preset are within the plugin itsel and then the plugin
+  // The location must then be null, as the preset are within the plugin itself and then the plugin
   // will act as a preset container.
   CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN = 1;
 
