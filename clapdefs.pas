@@ -3,18 +3,44 @@ unit clapdefs;
 //Delphi translation of the CLAP audio plugin header files from https://github.com/free-audio/clap
 //MIT license
 
+{
+ * CLAP - CLever Audio Plugin
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~
+ *
+ * Copyright (c) 2014...2022 Alexandre BIQUE <bique.alexandre@gmail.com>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ }
+
 interface
 
 uses
   System.SysUtils;
 
 type
-  uint16_t = uint16;
-  uint32_t = uint32;
-  uint64_t = uint64;
-  int16_t = int16;
-  int32_t = int32;
-  int64_t = int64;
+  uint16_t = UInt16;
+  uint32_t = UInt32;
+  uint64_t = UInt64;
+  int16_t = Int16;
+  int32_t = Int32;
+  int64_t = Int64;
+  size_t = LongWord;
 
 //version.h
 
@@ -29,8 +55,8 @@ type
 
 const
   CLAP_VERSION_MAJOR = 1;
-  CLAP_VERSION_MINOR = 1;
-  CLAP_VERSION_REVISION = 9;
+  CLAP_VERSION_MINOR = 2;
+  CLAP_VERSION_REVISION = 0;
 
   CLAP_VERSION: Tclap_version = (
     major: CLAP_VERSION_MAJOR;
@@ -205,19 +231,62 @@ const
 
 type
 // Note on, off, end and choke events.
+//
+// Clap addresses notes and voices using the 4-value tuple
+// (port, channel, key, note_id). Note on/off/end/choke
+// events and parameter modulation messages are delivered with
+// these values populated.
+//
+// Values in a note and voice address are either >= 0 if they
+// are specified, or -1 to indicate a wildcard. A wildcard
+// means a voice with any value in that part of the tuple
+// matches the message.
+//
+// For instance, a (PCKN) of (0, 3, -1, -1) will match all voices
+// on channel 3 of port 0. And a PCKN of (-1, 0, 60, -1) will match
+// all channel 0 key 60 voices, independent of port or note id.
+//
+// Especially in the case of note-on note-off pairs, and in the
+// absence of voice stacking or polyphonic modulation, a host may
+// choose to issue a note id only at note on. So you may see a
+// message stream like
+//
+// CLAP_EVENT_NOTE_ON  [0,0,60,184]
+// CLAP_EVENT_NOTE_OFF [0,0,60,-1]
+//
+// and the host will expect the first voice to be released.
+// Well constructed plugins will search for voices and notes using
+// the entire tuple.
+//
 // In the case of note choke or end events:
 // - the velocity is ignored.
-// - key and channel are used to match active notes, a value of -1 matches all.
+// - key and channel are used to match active notes
+// - note_id is optionally provided by the host
   Tclap_event_note = record
     header: Tclap_event_header;
 
-    note_id: int32_t;  // -1 if unspecified, otherwise >=0
-    port_index: int16_t;
-    channel: int16_t; // 0..15
-    key: int16_t;     // 0..127
-    velocity: double; // 0..1
+    note_id: int32_t;     // host provided note id >= 0, or -1 if unspecified or wildcard
+    port_index: int16_t;  // port index from ext/note-ports; -1 for wildcard
+    channel: int16_t;     // 0..15, same as MIDI1 Channel Number, -1 for wildcard
+    key: int16_t;         // 0..127, same as MIDI1 Key Number (60==Middle C), -1 for wildcard
+    velocity: double;     // 0..1
   end;
 
+// Note Expressions are well named modifications of a voice targeted to
+// voices using the same wildcard rules described above. Note Expressions are delivered
+// as sample accurate events and should be applied at the sample when received.
+//
+// Note expressions are a statement of value, not cumulative. A PAN event of 0 followed by 1
+// followed by 0.5 would pan hard left, hard right, and center. They are intended as
+// an offset from the non-note-expression voice default. A voice which had a volume of
+// -20db absent note expressions which received a +4db note expression would move the
+// voice to -16db.
+//
+// A plugin which receives a note expression at the same sample as a NOTE_ON event
+// should apply that expression to all generated samples. A plugin which receives
+// a note expression after a NOTE_ON event should initiate the voice with default
+// values and then apply the note expression when received. A plugin may make a choice
+// to smooth note expression streams.
 const
   // with 0 < x <= 4, plain = 20 * log(x)
   CLAP_NOTE_EXPRESSION_VOLUME = 0;
@@ -225,7 +294,9 @@ const
   // pan, 0 left, 0.5 center, 1 right
   CLAP_NOTE_EXPRESSION_PAN = 1;
 
-  // relative tuning in semitone, from -120 to +120
+  // Relative tuning in semitones, from -120 to +120. Semitones are in
+  // equal temperament and are doubles; the resulting note would be
+  // retuned by `100 * evt->value` cents.
   CLAP_NOTE_EXPRESSION_TUNING = 2;
 
   // 0..1
@@ -242,7 +313,8 @@ type
 
     expression_id: Tclap_note_expression;
 
-    // target a specific note_id, port, key and channel, -1 for global
+    // target a specific note_id, port, key and channel, with
+    // -1 meaning wildcard, per the wildcard discussion above
     note_id: int32_t;
     port_index: int16_t;
     channel: int16_t;
@@ -258,7 +330,8 @@ type
     param_id: Tclap_id; // @ref clap_param_info.id
     cookie: pointer;    // @ref clap_param_info.cookie
 
-    // target a specific note_id, port, key and channel, -1 for global
+    // target a specific note_id, port, key and channel, with
+    // -1 meaning wildcard, per the wildcard discussion above
     note_id: int32_t;
     port_index: int16_t;
     channel: int16_t;
@@ -274,7 +347,8 @@ type
     param_id: Tclap_id; // @ref clap_param_info.id
     cookie: pointer;    // @ref clap_param_info.cookie
 
-    // target a specific note_id, port, key and channel, -1 for global
+    // target a specific note_id, port, key and channel, with
+    // -1 meaning wildcard, per the wildcard discussion above
     note_id: int32_t;
     port_index: int16_t;
     channel: int16_t;
@@ -550,6 +624,9 @@ type
     // Must be called after creating the plugin.
     // If init returns false, the host must destroy the plugin instance.
     // If init returns true, then the plugin is initialized and in the deactivated state.
+    // Unlike in `plugin-factory::create_plugin`, in init you have complete access to the host
+    // and host extensions, so clap related setup activities should be done here rather than in
+    // create_plugin.
     // [main-thread]
     //bool (*init)(const struct clap_plugin *plugin);
     init: function(plugin: Pclap_plugin): boolean; cdecl;
@@ -565,23 +642,24 @@ type
     // call. The process's sample rate will be constant and process's frame count will included in
     // the [min, max] range, which is bounded by [1, INT32_MAX].
     // Once activated the latency and port configuration must remain constant, until deactivation.
-    //
-    // [main-thread & !active_state]
+    // Returns true on success.
+    // [main-thread & !active]
     //bool (*activate)(const struct clap_plugin *plugin,
     //                 double                    sample_rate,
     //                 uint32_t                  min_frames_count,
     //                 uint32_t                  max_frames_count);
     activate: function(plugin: Pclap_plugin; sample_rate: double; min_frames_count: uint32_t; max_frames_count: uint32_t): boolean; cdecl;
-    // [main-thread & active_state]
+    // [main-thread & active]
     //void (*deactivate)(const struct clap_plugin *plugin);
     deactivate: procedure(plugin: Pclap_plugin); cdecl;
 
     // Call start processing before processing.
-    // [audio-thread & active_state & !processing_state]
+    // Returns true on success.
+    // [audio-thread & active & !processing]
     //bool (*start_processing)(const struct clap_plugin *plugin);
     start_processing: function(plugin: Pclap_plugin): boolean; cdecl;
     // Call stop processing before sending the plugin to sleep.
-    // [audio-thread & active_state & processing_state]
+    // [audio-thread & active & processing]
     //void (*stop_processing)(const struct clap_plugin *plugin);
     stop_processing: procedure(plugin: Pclap_plugin); cdecl;
 
@@ -590,14 +668,14 @@ type
     // - The parameter's value remain unchanged.
     // - clap_process.steady_time may jump backward.
     //
-    // [audio-thread & active_state]
+    // [audio-thread & active]
     //void (*reset)(const struct clap_plugin *plugin);
     reset: procedure(plugin: Pclap_plugin); cdecl;
 
     // process audio, events, ...
     // All the pointers coming from clap_process_t and its nested attributes,
     // are valid until process() returns.
-    // [audio-thread & active_state & processing_state]
+    // [audio-thread & active & processing]
     //clap_process_status (*process)(const struct clap_plugin *plugin, const clap_process_t *process);
     process: function(plugin: Pclap_plugin; process: Pclap_process): Tclap_process_status; cdecl;
 
@@ -700,6 +778,32 @@ const
   CLAP_PLUGIN_FEATURE_AMBISONIC = 'ambisonic';
 
 
+//universal-plugin-id.h
+
+// Pair of plugin ABI and plugin identifier
+type
+  Tclap_universal_plugin_id = record
+    // The plugin ABI name, in lowercase and null-terminated.
+    // eg: "clap", "vst3", "vst2", "au", ...
+    abi: PAnsiChar;
+    // The plugin ID, null-terminated and formatted as follow:
+    //
+    // CLAP: use the plugin id
+    //   eg: "com.u-he.diva"
+    //
+    // AU: format the string like "type:subt:manu"
+    //   eg: "aumu:SgXT:VmbA"
+    //
+    // VST2: print the id as a signed 32-bits integer
+    //   eg: "-4382976"
+    //
+    // VST3: print the id as a standard UUID
+    //   eg: "123e4567-e89b-12d3-a456-426614174000"
+    id: PAnsiChar;
+  end;
+  Pclap_universal_plugin_id = ^Tclap_universal_plugin_id;
+
+
 //factory\plugin-factory.h
 
 // Use it to retrieve const clap_plugin_factory_t* from
@@ -745,7 +849,7 @@ type
 // Use it to retrieve const clap_plugin_invalidation_factory_t* from
 // clap_plugin_entry.get_factory()
 const
-  CLAP_PLUGIN_INVALIDATION_FACTORY_ID = AnsiString('clap.plugin-invalidation-factory/draft0');
+  CLAP_PLUGIN_INVALIDATION_FACTORY_ID = AnsiString('clap.plugin-invalidation-factory/1');
 
 type
   Tclap_plugin_invalidation_source = record
@@ -794,8 +898,8 @@ type
 //   - /usr/lib/clap
 //
 // Windows
-//   - %COMMONPROGRAMFILES%/CLAP/
-//   - %LOCALAPPDATA%/Programs/Common/CLAP/
+//   - %COMMONPROGRAMFILES%\CLAP
+//   - %LOCALAPPDATA%\Programs\Common\CLAP
 //
 // MacOS
 //   - /Library/Audio/Plug-Ins/CLAP
@@ -809,36 +913,102 @@ type
 // Each directory should be recursively searched for files and/or bundles as appropriate in your OS
 // ending with the extension `.clap`.
 //
-// Every method must be thread-safe.
+// init and deinit in most cases are called once, in a matched pair, when the dso is loaded / unloaded.
+// In some rare situations it may be called multiple times in a process, so the functions must be defensive,
+// mutex locking and counting calls if undertaking non trivial non idempotent actions.
+//
+// Rationale:
+//
+//    The intent of the init() and deinit() functions is to provide a "normal" initialization patterh
+//    which occurs when the shared object is loaded or unloaded. As such, hosts will call each once and
+//    in matched pairs. In CLAP specifications prior to 1.2.0, this single-call was documented as a
+//    requirement.
+//
+//    We realized, though, that this is not a requirement hosts can meet. If hosts load a plugin
+//    which itself wraps another CLAP for instance, while also loading that same clap in its memory
+//    space, both the host and the wrapper will call init() and deinit() and have no means to communicate
+//    the state.
+//
+//    With CLAP 1.2.0 and beyond we are changing the spec to indicate that a host should make an
+//    absolute best effort to call init() and deinit() once, and always in matched pairs (for every
+//    init() which returns true, one deinit() should be called).
+//
+//    This takes the de-facto burden on plugin writers to deal with multiple calls into a hard requirement.
+//
+//    Most init() / deinit() pairs we have seen are the relatively trivial {return true;} and {}. But
+//    if your init() function does non-trivial one time work, the plugin author must maintain a counter
+//    and must manage a mutex lock. The most obvious implementation will maintain a static counter and a
+//    global mutex, increment the counter on each init, decrement it on each deinit, and only undertake
+//    the init or deinit action when the counter is zero.
   Tclap_plugin_entry = record
     clap_version: Tclap_version;     // initialized to CLAP_VERSION
 
-    // This function must be called first, and can only be called once.
+    // Initializes the DSO.
+    //
+    // This function must be called first, before any-other CLAP-related function or symbol from this
+    // DSO.
+    //
+    // It also must only be called once, until a later call to deinit() is made, after which init()
+    // can be called once more to re-initialize the DSO.
+    // This enables hosts to e.g. quickly load and unload a DSO for scanning its plugins, and then
+    // load it again later to actually use the plugins if needed.
+    //
+    // As stated above, even though hosts are forbidden to do so directly, multiple calls before any
+    // deinit() call may still happen. Implementations *should* take this into account, and *must*
+    // do so as of CLAP 1.2.0.
     //
     // It should be as fast as possible, in order to perform a very quick scan of the plugin
     // descriptors.
     //
-    // It is forbidden to display graphical user interface in this call.
-    // It is forbidden to perform user interaction in this call.
+    // It is forbidden to display graphical user interfaces in this call.
+    // It is forbidden to perform any user interaction in this call.
     //
     // If the initialization depends upon expensive computation, maybe try to do them ahead of time
     // and cache the result.
     //
-    // If init() returns false, then the host must not call deinit() nor any other clap
-    // related symbols from the DSO.
+    // Returns true on success. If init() returns false, then the DSO must be considered
+    // uninitialized, and the host must not call deinit() nor any other CLAP-related symbols from the
+    // DSO.
+    // This function also returns true in the case where the DSO is already initialized, and no
+    // actual initialization work is done in this call, as explain above.
     //
     // plugin_path is the path to the DSO (Linux, Windows), or the bundle (macOS).
+    //
+    // This function may be called on any thread, including a different one from the one a later call
+    // to deinit() (or a later init()) can be made.
+    // However, it is forbidden to call this function simultaneously from multiple threads.
+    // It is also forbidden to call it simultaneously with *any* other CLAP-related symbols from the
+    // DSO, including (but not limited to) deinit().
     //bool (*init)(const char *plugin_path);
     init: function (plugin_path: PAnsiChar): boolean; cdecl;
 
-    // No more calls into the DSO must be made after calling deinit().
+     // De-initializes the DSO, freeing any resources allocated or initialized by init().
+     //
+     // After this function is called, no more calls into the DSO must be made, except calling init()
+     // again to re-initialize the DSO.
+     // This means that after deinit() is called, the DSO can be considered to be in the same state
+     // as if init() was never called at all yet, enabling it to be re-initialized as needed.
+     //
+     // As stated above, even though hosts are forbidden to do so directly, multiple calls before any
+     // new init() call may still happen. Implementations *should* take this into account, and *must*
+     // do so as of CLAP 1.2.0.
+     //
+     // Just like init(), this function may be called on any thread, including a different one from
+     // the one init() was called from, or from the one a later init() call can be made.
+     // However, it is forbidden to call this function simultaneously from multiple threads.
+     // It is also forbidden to call it simultaneously with *any* other CLAP-related symbols from the
+     // DSO, including (but not limited to) deinit().
     //void (*deinit)(void);
     deinit: procedure; cdecl;
 
-    // Get the pointer to a factory. See See factory/plugin-factory.h for an example.
+    // Get the pointer to a factory. See factory/plugin-factory.h for an example.
     //
     // Returns null if the factory is not provided.
     // The returned pointer must *not* be freed by the caller.
+    //
+    // Unlike init() and deinit(), this function can be called simultaneously by multiple threads.
+    //
+    // [thread-safe]
     //const void *(*get_factory)(const char *factory_id);
     get_factory: function(factory_id: PAnsiChar): pointer; cdecl;
   end;
@@ -881,6 +1051,19 @@ type
     //int64_t (*write)(const struct clap_ostream *stream, const void *buffer, uint64_t size);
     write: function(stream: Pclap_ostream; buffer: pointer; size: uint64_t): int64_t; cdecl;
   end;
+
+
+//timestamp.h
+
+// This type defines a timestamp: the number of seconds since UNIX EPOCH.
+// See C's time_t time(time_t *).
+type
+  Tclap_timestamp = uint64_t;
+
+// Value for unknown timestamp.
+const
+  CLAP_TIMESTAMP_UNKNOWN = 0;
+
 
 
 //ext\gui.h
@@ -1031,7 +1214,6 @@ type
     get_size: function(plugin: Pclap_plugin; var width: uint32_t; var height: uint32_t): boolean; cdecl;
 
     // Returns true if the window is resizeable (mouse drag).
-    // Only for embedded windows.
     // [main-thread & !floating]
     //bool (*can_resize)(const clap_plugin_t *plugin);
     can_resize: function(plugin: Pclap_plugin): boolean; cdecl;
@@ -1044,8 +1226,6 @@ type
     // If the plugin gui is resizable, then the plugin will calculate the closest
     // usable size which fits in the given size.
     // This method does not change the size.
-    //
-    // Only for embedded windows.
     //
     // Returns true if the plugin could adjust the given size.
     // [main-thread & !floating]
@@ -1164,7 +1344,7 @@ type
   Pclap_host_log = ^Tclap_host_log;
 
 
-//state.h
+//ext\state.h
 
 /// @page State
 /// @brief state management
@@ -1173,6 +1353,10 @@ type
 /// values and non-parameter state. This is used to persist a plugin's state
 /// between project reloads, when duplicating and copying plugin instances, and
 /// for host-side preset management.
+///
+/// If you need to know if the save/load operation is meant for duplicating a plugin
+/// instance, for saving/loading a plugin preset or while saving/loading the project
+/// then consider implementing CLAP_EXT_STATE_CONTEXT in addition to CLAP_EXT_STATE.
 
 const
   CLAP_EXT_STATE = AnsiString('clap.state');
@@ -1203,7 +1387,7 @@ type
   Pclap_host_state = ^Tclap_host_state;
 
 
-//ext\draft\state-context.h
+//ext\state-context.h
 
 /// @page state-context extension
 /// @brief extended state handling
@@ -1212,7 +1396,8 @@ type
 /// on the context.
 ///
 /// Briefly, when loading a preset or duplicating a device, the plugin may want to partially load
-/// the state and initialize certain things differently.
+/// the state and initialize certain things differently, like handling limited resources or fixed
+/// connections to external hardware resources.
 ///
 /// Save and Load operations may have a different context.
 /// All three operations should be equivalent:
@@ -1222,17 +1407,24 @@ type
 ///        clap_plugin_state_context.save(CLAP_STATE_CONTEXT_FOR_PRESET),
 ///        CLAP_STATE_CONTEXT_FOR_PRESET)
 ///
+/// If in doubt, fallback to clap_plugin_state.
+///
 /// If the plugin implements CLAP_EXT_STATE_CONTEXT then it is mandatory to also implement
 /// CLAP_EXT_STATE.
+///
+/// It is unspecified which context is equivalent to clap_plugin_state.{save,load}()
 
 const
-  CLAP_EXT_STATE_CONTEXT = AnsiString('clap.state-context.draft/1');
+  CLAP_EXT_STATE_CONTEXT = AnsiString('clap.state-context/2');
+
+  // suitable for storing and loading a state as a preset
+  CLAP_STATE_CONTEXT_FOR_PRESET = 1;
 
   // suitable for duplicating a plugin instance
-  CLAP_STATE_CONTEXT_FOR_DUPLICATE = 1;
+  CLAP_STATE_CONTEXT_FOR_DUPLICATE = 2;
 
-  // suitable for loading a state as a preset
-  CLAP_STATE_CONTEXT_FOR_PRESET = 2;
+  // suitable for storing and loading a state within a project/song
+  CLAP_STATE_CONTEXT_FOR_PROJECT = 3;
 
 type
   Tclap_plugin_state_context = record
@@ -1274,10 +1466,12 @@ type
     // Registers a periodic timer.
     // The host may adjust the period if it is under a certain threshold.
     // 30 Hz should be allowed.
+    // Returns true on success.
     // [main-thread]
     //bool (*register_timer)(const clap_host_t *host, uint32_t period_ms, clap_id *timer_id);
     register_timer: function(host: Pclap_host; period_ms: uint32_t; var timer_id: Tclap_id): boolean; cdecl;
 
+    // Returns true on success.
     // [main-thread]
     //bool (*unregister_timer)(const clap_host_t *host, clap_id timer_id);
     unregister_timer: function(host: Pclap_host; timer_id: Tclap_id): boolean; cdecl;
@@ -1286,6 +1480,8 @@ type
 
 //ext\audio-ports.h
 
+/// @page Audio Ports
+///
 /// This extension provides a way for the plugin to describe its current audio ports.
 ///
 /// If the plugin does not implement this extension, it won't have audio ports.
@@ -1331,7 +1527,6 @@ type
     // - CLAP_PORT_STEREO
     // - CLAP_PORT_SURROUND (defined in the surround extension)
     // - CLAP_PORT_AMBISONIC (defined in the ambisonic extension)
-    // - CLAP_PORT_CV (defined in the cv extension)
     //
     // An extension can provide its own port type and way to inspect the channels.
     port_type: PAnsiChar;
@@ -1345,12 +1540,13 @@ type
 
 // The audio ports scan has to be done while the plugin is deactivated.
   Tclap_plugin_audio_ports = record
-    // number of ports, for either input or output
+    // Number of ports, for either input or output
     // [main-thread]
     //uint32_t (*count)(const clap_plugin_t *plugin, bool is_input);
     count: function(plugin: Pclap_plugin; is_input: boolean): uint32_t; cdecl;
 
-    // get info about about an audio port.
+    // Get info about an audio port.
+    // Returns true on success and stores the result into info.
     // [main-thread]
     //bool (*get)(const clap_plugin_t    *plugin,
     //           uint32_t                index,
@@ -1419,7 +1615,11 @@ type
 /// extension where all busses can be retrieved in the same way as in the audio-port extension.
 const
   CLAP_EXT_AUDIO_PORTS_CONFIG = AnsiString('clap.audio-ports-config');
-  CLAP_EXT_AUDIO_PORTS_CONFIG_INFO = AnsiString('clap.audio-ports-config-info/draft-0');
+  CLAP_EXT_AUDIO_PORTS_CONFIG_INFO = AnsiString('clap.audio-ports-config-info/1');
+
+// The latest draft is 100% compatible.
+// This compat ID may be removed in 2026.
+  CLAP_EXT_AUDIO_PORTS_CONFIG_INFO_COMPAT = AnsiString('clap.audio-ports-config-info/draft-0');
 
 // Minimalistic description of ports configuration
 type
@@ -1441,12 +1641,13 @@ type
 
 // The audio ports config scan has to be done while the plugin is deactivated.
   Tclap_plugin_audio_ports_config = record
-    // gets the number of available configurations
+    // Gets the number of available configurations
     // [main-thread]
     //uint32_t(CLAP_ABI *count)(const clap_plugin_t *plugin);
     count: function(plugin: Pclap_plugin): uint32_t; cdecl;
 
-    // gets information about a configuration
+    // Gets information about a configuration
+    // Returns true on success and stores the result into config.
     // [main-thread]
     //bool(CLAP_ABI *get)(const clap_plugin_t       *plugin,
     //                   uint32_t                   index,
@@ -1472,6 +1673,7 @@ type
     current_config: function(plugin: Pclap_plugin): Tclap_id; cdecl;
     // Get info about an audio port, for a given config_id.
     // This is analogous to clap_plugin_audio_ports.get().
+    // Returns true on success and stores the result into info.
     // [main-thread]
     //bool(CLAP_ABI *get)(const clap_plugin_t    *plugin,
     //                    clap_id                 config_id,
@@ -1489,12 +1691,16 @@ type
   end;
   Pclap_host_audio_ports_config = ^Tclap_host_audio_ports_config;
 
-//ext\draft\configurable-audio-ports.h
+//ext\configurable-audio-ports.h
 
 // This extension lets the host configure the plugin's input and output audio ports
-
+// This is a "push" approach to audio ports configuration.
 const
-  CLAP_EXT_CONFIGURABLE_AUDIO_PORTS = AnsiString('clap.configurable-audio-ports.draft1');
+  CLAP_EXT_CONFIGURABLE_AUDIO_PORTS = AnsiString('clap.configurable-audio-ports/1');
+
+  // The latest draft is 100% compatible.
+  // This compat ID may be removed in 2026.
+  CLAP_EXT_CONFIGURABLE_AUDIO_PORTS_COMPAT = AnsiString('clap.configurable-audio-ports.draft1');
 
 type
   Tclap_audio_port_configuration_request = record
@@ -1518,16 +1724,27 @@ type
   Pclap_audio_port_configuration_request = ^Tclap_audio_port_configuration_request;
 
   Tclap_plugin_configurable_audio_ports = record
-    // If is_dry_run is true, then checks if the configuration can be applied.
-    // If is_dry_run is false, then applies the configuration.
+    // Returns true if the given configurations can be applied using apply_configuration().
+    // [main-thread && !active]
+    //bool(CLAP_ABI *can_apply_configuration)(
+    //     const clap_plugin_t                                *plugin,
+    //     const struct clap_audio_port_configuration_request *requests,
+    //     uint32_t                                            request_count);
+    can_apply_configuration: function(plugin: Pclap_plugin; requests: Pclap_audio_port_configuration_request; request_count: uint32_t): boolean; cdecl;
+
+    // Submit a bunch of configuration requests which will atomically be applied together,
+    // or discarded together.
+    //
+    // Once the configuration is successfully applied, it isn't necessary for the plugin to call
+    // clap_host_audio_ports->changed(); and it isn't necessary for the host to scan the
+    // audio ports.
+    //
     // Returns true if applied.
     // [main-thread && !active]
-    //bool(CLAP_ABI *apply_configuration)(
-    // const clap_plugin_t                                *plugin,
-    // const struct clap_audio_port_configuration_request *requests,
-    // uint32_t request_count,
-    // bool is_dry_run);
-    apply_configuration: function(plugin: Pclap_plugin; requests: Pclap_audio_port_configuration_request; request_count: uint32_t; is_dry_run: boolean): boolean; cdecl;
+    //bool(CLAP_ABI *apply_configuration)(const clap_plugin_t                                *plugin,
+    //                                    const struct clap_audio_port_configuration_request *requests,
+    //                                    uint32_t request_count);
+    apply_configuration: function(plugin: Pclap_plugin; requests: Pclap_audio_port_configuration_request; request_count: uint32_t): boolean; cdecl;
   end;
   Pclap_plugin_configurable_audio_ports = ^Tclap_plugin_configurable_audio_ports;
 
@@ -1567,12 +1784,13 @@ type
 
 // The note ports scan has to be done while the plugin is deactivated.
   Tclap_plugin_note_ports = record
-    // number of ports, for either input or output
+    // Number of ports, for either input or output
     // [main-thread]
     //uint32_t (*count)(const clap_plugin_t *plugin, bool is_input);
     count: function(plugin: Pclap_plugin; is_input: boolean): uint32_t; cdecl;
 
-    // get info about about a note port.
+    // Get info about a note port.
+    // Returns true on success and stores the result into info.
     // [main-thread]
     //bool (*get)(const clap_plugin_t   *plugin,
     //            uint32_t               index,
@@ -1604,6 +1822,7 @@ type
     //void (*rescan)(const clap_host_t *host, uint32_t flags);
     rescan: procedure(host: Pclap_host; flags: uint32_t); cdecl;
   end;
+  Pclap_host_note_ports = ^Tclap_host_note_ports;
 
 
 //ext\params.h
@@ -1617,7 +1836,7 @@ type
 /// The plugin is responsible for keeping its audio processor and its GUI in sync.
 ///
 /// The host can at any time read parameters' value on the [main-thread] using
-/// @ref clap_plugin_params.value().
+/// @ref clap_plugin_params.get_value().
 ///
 /// There are two options to communicate parameter value changes, and they are not concurrent.
 /// - send automation points during clap_plugin.process()
@@ -1797,6 +2016,11 @@ const
   // processed.
   CLAP_PARAM_REQUIRES_PROCESS = 1 shl 15;
 
+  // This parameter represents an enumerated value.
+  // If you set this flag, then you must set CLAP_PARAM_IS_STEPPED too.
+  // All values from min to max must not have a blank value_to_text().
+  CLAP_PARAM_IS_ENUM = 1 shl 16;
+
 type
   Tclap_param_info_flags = uint32_t;
 
@@ -1856,6 +2080,7 @@ type
     count: function(plugin: Pclap_plugin): uint32_t; cdecl;
 
     // Copies the parameter's info to param_info and returns true on success.
+    // Returns true on success.
     // [main-thread]
     //bool (*get_info)(const clap_plugin_t *plugin,
     //                 uint32_t              param_index,
@@ -1863,13 +2088,15 @@ type
     get_info: function(plugin: Pclap_plugin; param_index: uint32_t; var param_info: Tclap_param_info): boolean; cdecl;
 
     // Writes the parameter's current value to out_value. Returns true on success.
+    // Returns true on success.
     // [main-thread]
     //bool (*get_value)(const clap_plugin_t *plugin, clap_id param_id, double *value);
     get_value: function(plugin: Pclap_plugin; param_id: Tclap_id; var value: double): boolean; cdecl;
 
     // Fills out_buffer with a null-terminated UTF-8 string that represents the parameter at the
-    // given 'value' argument. eg: "2.3 kHz". Returns true on success. The host should always use
-    // this to format parameter values before displaying it to the user. [main-thread]
+    // given 'value' argument. eg: "2.3 kHz". The host should always use this to format parameter
+    // values before displaying it to the user.
+    // Returns true on success.
     // [main-thread]
     //bool(CLAP_ABI *value_to_text)(const clap_plugin_t *plugin,
     //                              clap_id              param_id,
@@ -1879,7 +2106,8 @@ type
     value_to_text: function(plugin: Pclap_plugin; param_id: Tclap_id; value: double; out_buffer: PAnsiChar; out_buffer_capacity: uint32_t): boolean; cdecl;
 
     // Converts the null-terminated UTF-8 param_value_text into a double and writes it to out_value.
-    // Returns true on success. The host can use this to convert user input into a parameter value.
+    // The host can use this to convert user input into a parameter value.
+    // Returns true on success.
     // [main-thread]
     //bool (*text_to_value)(const clap_plugin_t *plugin,
     //                     clap_id              param_id,
@@ -2025,11 +2253,10 @@ type
 const
   CLAP_EXT_LATENCY = AnsiString('clap.latency');
 
-// The audio ports scan has to be done while the plugin is deactivated.
 type
   Tclap_plugin_latency = record
     // Returns the plugin latency in samples.
-    // [main-thread]
+    // [main-thread & active]
     //uint32_t (*get)(const clap_plugin_t *plugin);
     get: function(plugin: Pclap_plugin): uint32_t; cdecl;
   end;
@@ -2097,6 +2324,7 @@ type
     //bool (*has_hard_realtime_requirement)(const clap_plugin_t *plugin);
     has_hard_realtime_requirement: function(plugin: Pclap_plugin): boolean; cdecl;
 
+    // Returns true if the rendering mode could be applied.
     // [main-thread]
     //bool (*set)(const clap_plugin_t *plugin, clap_plugin_render_mode mode);
     &set: function(plugin: Pclap_plugin; mode: Tclap_plugin_render_mode): boolean; cdecl;
@@ -2115,7 +2343,6 @@ const
 ///
 /// main-thread:
 ///    This is the thread in which most of the interaction between the plugin and host happens.
-///    It is usually the thread on which the GUI receives its events.
 ///    This will be the same OS thread throughout the lifetime of the plug-in.
 ///    On macOS and Windows, this must be the thread on which gui and timer events are received
 ///    (i.e., the main thread of the program).
@@ -2155,18 +2382,21 @@ type
   Pclap_host_thread_check = ^Tclap_host_thread_check;
 
 
-//ext\draft\context-menu.h
+//ext\context-menu.h
 
 // This extension lets the host and plugin exchange menu items and let the plugin ask the host to
 // show its context menu.
 
 const
-   CLAP_EXT_CONTEXT_MENU = AnsiString('clap.context-menu.draft/0');
+   CLAP_EXT_CONTEXT_MENU = AnsiString('clap.context-menu/1');
+
+// The latest draft is 100% compatible.
+// This compat ID may be removed in 2026.
+   CLAP_EXT_CONTEXT_MENU_COMPAT = AnsiString('clap.context-menu.draft/0');
 
 // There can be different target kind for a context menu
    CLAP_CONTEXT_MENU_TARGET_KIND_GLOBAL = 0;
    CLAP_CONTEXT_MENU_TARGET_KIND_PARAM = 1;
-   // TODO: kind trigger once the trigger ext is marked as stable
 
 // Describes the context menu target
 type
@@ -2234,7 +2464,7 @@ type
 
     // if false, then the menu entry is greyed out
     is_enabled: boolean;
-  end;	
+  end;
   Pclap_context_menu_item_title = ^Tclap_context_menu_item_title;
 
   Tclap_context_menu_submenu = record
@@ -2253,7 +2483,8 @@ type
     ctx: TObject;
 
     // Adds an entry to the menu.
-    // entry_data type is determined by entry_kind.
+    // item_data type is determined by item_kind.
+    // Returns true on success.
     //bool(CLAP_ABI *add_item)(const struct clap_context_menu_builder *builder,
     //                         clap_context_menu_item_kind_t           item_kind,
     //                         const void                             *item_data);
@@ -2268,6 +2499,7 @@ type
   Tclap_plugin_context_menu = record
     // Insert plugin's menu items into the menu builder.
     // If target is null, assume global context
+    // Returns true on success.
     // [main-thread]
     //bool(CLAP_ABI *populate)(const clap_plugin_t               *plugin,
     //                         const clap_context_menu_target_t  *target,
@@ -2276,6 +2508,7 @@ type
 
     // Performs the given action, which was previously provided to the host via populate().
     // If target is null, assume global context
+    // Returns true on success.
     // [main-thread]
     //bool(CLAP_ABI *perform)(const clap_plugin_t              *plugin,
     //                        const clap_context_menu_target_t *target,
@@ -2287,6 +2520,7 @@ type
   Tclap_host_context_menu = record
     // Insert host's menu items into the menu builder.
     // If target is null, assume global context
+    // Returns true on success.
     // [main-thread]
     //bool(CLAP_ABI *populate)(const clap_host_t                 *host,
     //                         const clap_context_menu_target_t  *target,
@@ -2295,6 +2529,7 @@ type
 
     // Performs the given action, which was previously provided to the plugin via populate().
     // If target is null, assume global context
+    // Returns true on success.
     // [main-thread]
     //bool(CLAP_ABI *perform)(const clap_host_t                *host,
     //                        const clap_context_menu_target_t *target,
@@ -2312,6 +2547,7 @@ type
     // If the plugin is using embedded GUI, then x and y are relative to the plugin's window,
     // otherwise they're absolute coordinate, and screen index might be set accordingly.
     // If target is null, assume global context
+    // Returns true on success.
     // [main-thread]
     //bool(CLAP_ABI *popup)(const clap_host_t                *host,
     //                      const clap_context_menu_target_t *target,
@@ -2336,7 +2572,11 @@ type
 // across all plugins.
 
 const
-  CLAP_EXT_PARAM_INDICATION = AnsiString('clap.param-indication.draft/4');
+  CLAP_EXT_PARAM_INDICATION = AnsiString('clap.param-indication/4');
+
+// The latest draft is 100% compatible.
+// This compat ID may be removed in 2026.
+  CLAP_EXT_PARAM_INDICATION_COMPAT = AnsiString('clap.param-indication.draft/4');
 
   // The host doesn't have an automation for this parameter
   CLAP_PARAM_INDICATION_AUTOMATION_NONE = 0;
@@ -2390,7 +2630,7 @@ type
   Pclap_plugin_param_indication = ^Tclap_plugin_param_indication;
 
 
-//ext\draft\remote-controls.h
+//ext\remote-controls.h
 
 // This extension let the plugin provide a structured way of mapping parameters to an hardware
 // controller.
@@ -2420,7 +2660,9 @@ type
 // Pressing that button once gets you to the first page of the section.
 // Press it again to cycle through the section's pages.
 const
-  CLAP_EXT_REMOTE_CONTROLS = AnsiString('clap.remote-controls.draft/2');
+  CLAP_EXT_REMOTE_CONTROLS = AnsiString('clap.remote-controls/2');
+
+  CLAP_EXT_REMOTE_CONTROLS_COMPAT = AnsiString('clap.remote-controls.draft/2');
 
   CLAP_REMOTE_CONTROLS_COUNT = 8;
 
@@ -2444,6 +2686,7 @@ type
     count: function(plugin: Pclap_plugin): uint32_t; cdecl;
 
     // Get a page by index.
+    // Returns true on success and stores the result into page.
     // [main-thread]
     //bool(CLAP_ABI *get)(const clap_plugin_t         *plugin,
     //                    uint32_t                     page_index,
@@ -2467,13 +2710,18 @@ type
   Pclap_host_remote_controls = ^Tclap_host_remote_controls;
 
 
-//ext\draft\track-info.h
+//ext\track-info.h
 
 // This extension let the plugin query info about the track it's in.
 // It is useful when the plugin is created, to initialize some parameters (mix, dry, wet)
 // and pick a suitable configuration regarding audio port type and channel count.
 const
-  CLAP_EXT_TRACK_INFO = AnsiString('clap.track-info.draft/1');
+  CLAP_EXT_TRACK_INFO = AnsiString('clap.track-info/1');
+
+// The latest draft is 100% compatible.
+// This compat ID may be removed in 2026.
+  CLAP_EXT_TRACK_INFO_COMPAT = AnsiString('clap.track-info.draft/1');
+
   CLAP_TRACK_INFO_HAS_TRACK_NAME = 1 shl 0;
   CLAP_TRACK_INFO_HAS_TRACK_COLOR = 1 shl 1;
   CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL = 1 shl 2;
@@ -2506,6 +2754,7 @@ type
   Pclap_plugin_track_info = ^Tclap_plugin_track_info;
   Tclap_host_track_info = record
     // Get info about the track the plugin belongs to.
+    // Returns true on success and stores the result into info.
     // [main-thread]
     //bool(CLAP_ABI *get)(const clap_host_t *host, clap_track_info_t *info);
     get: function(host: Pclap_host; info: Pclap_track_info): boolean; cdecl;
@@ -2520,7 +2769,7 @@ type
 // partially working.
 
 const
-  CLAP_EXT_TRANSPORT_CONTROL = AnsiString('clap.transport-control.draft/0');
+  CLAP_EXT_TRANSPORT_CONTROL = AnsiString('clap.transport-control/1');
 
 type
   Tclap_host_transport_control = record
@@ -2585,16 +2834,20 @@ type
   Pclap_host_transport_control = ^Tclap_host_transport_control;
 
 
-//ext\draft\preset-load.h
+//ext\preset-load.h
 
 const
-  CLAP_EXT_PRESET_LOAD = AnsiString('clap.preset-load.draft/2');
+  CLAP_EXT_PRESET_LOAD = AnsiString('clap.preset-load/2');
+
+// The latest draft is 100% compatible.
+// This compat ID may be removed in 2026.
+  CLAP_EXT_PRESET_LOAD_COMPAT = AnsiString('clap.preset-load.draft/2');
 
 type
   Tclap_plugin_preset_load = record
     // Loads a preset in the plugin native preset file format from a location.
     // The preset discovery provider defines the location and load_key to be passed to this function.
-    //
+    // Returns true on success.
     // [main-thread]
     //bool(CLAP_ABI *from_location)(const clap_plugin_t *plugin,
     //                              uint32_t             location_kind,
@@ -2633,7 +2886,7 @@ type
   Pclap_host_preset_load = ^Tclap_host_preset_load;
 
 
-//factory\draft\preset-discovery.h
+//factory\preset-discovery.h
 
 {
    Preset Discovery API.
@@ -2679,7 +2932,11 @@ type
 // Use it to retrieve const clap_preset_discovery_factory_t* from
 // clap_plugin_entry.get_factory()
 const
-  CLAP_PRESET_DISCOVERY_FACTORY_ID = AnsiString('clap.preset-discovery-factory/draft-2');
+  CLAP_PRESET_DISCOVERY_FACTORY_ID = AnsiString('clap.preset-discovery-factory/2');
+
+// The latest draft is 100% compatible.
+// This compat ID may be removed in 2026.
+  CLAP_PRESET_DISCOVERY_FACTORY_ID_COMPAT = AnsiString('clap.preset-discovery-factory/draft-2');
 
   // The preset are located in a file on the OS filesystem.
   // The location is then a path which works with the OS file system functions (open, stat, ...)
@@ -2706,28 +2963,6 @@ const
 
   // This preset is a user's favorite
   CLAP_PRESET_DISCOVERY_IS_FAVORITE = 1 shl 3;
-
-// TODO: move clap_timestamp_t, CLAP_TIMESTAMP_UNKNOWN and clap_plugin_id_t to parent files once we
-// settle with preset discovery
-// This type defines a timestamp: the number of seconds since UNIX EPOCH.
-// See C's time_t time(time_t *).
-type
-  Tclap_timestamp = uint64_t;
-// Value for unknown timestamp.
-const
-  CLAP_TIMESTAMP_UNKNOWN = 0;
-
-// Pair of plugin ABI and plugin identifier
-type
-  Tclap_plugin_id = record
-    // The plugin ABI name, in lowercase.
-    // eg: "clap"
-    abi: PAnsiChar;
-    // The plugin ID, for example "com.u-he.Diva".
-    // If the ABI rely upon binary plugin ids, then they shall be hex encoded (lower case).
-    id: PAnsiChar;
-  end;
-  Pclap_plugin_id = ^Tclap_plugin_id;
 
 // Receiver that receives the metadata for a single preset file.
 // The host would define the various callbacks in this interface and the preset parser function
@@ -2759,7 +2994,7 @@ type
     // plugin wants but it could also be some other unique id like a database primary key or a
     // binary offset. It's use is entirely up to the plug-in.
     //
-    // If the function returns false, the the provider must stop calling back into the receiver.
+    // If the function returns false, then the provider must stop calling back into the receiver.
     //bool(CLAP_ABI *begin_preset)(const struct clap_preset_discovery_metadata_receiver *receiver,
     //                             const char                                           *name,
     //                             const char                                           *load_key);
@@ -2767,8 +3002,8 @@ type
 
     // Adds a plug-in id that this preset can be used with.
     //void(CLAP_ABI *add_plugin_id)(const struct clap_preset_discovery_metadata_receiver *receiver,
-    //                              const clap_plugin_id_t                               *plugin_id);
-    add_plugin_id: procedure(receiver: Pclap_preset_discovery_metadata_receiver; plugin_id: Pclap_plugin_id); cdecl;
+    //                              const clap_universal_plugin_id_t                               *plugin_id);
+    add_plugin_id: procedure(receiver: Pclap_preset_discovery_metadata_receiver; plugin_id: Pclap_universal_plugin_id); cdecl;
 
     // Sets the sound pack to which the preset belongs to.
     //void(CLAP_ABI *set_soundpack_id)(const struct clap_preset_discovery_metadata_receiver *receiver,
@@ -2797,8 +3032,8 @@ type
     // If this function is not called, then the indexer may look at the file's creation and
     // modification time.
     //void(CLAP_ABI *set_timestamps)(const struct clap_preset_discovery_metadata_receiver *receiver,
-    //                               clap_timestamp_t creation_time,
-    //                               clap_timestamp_t modification_time);
+    //                               clap_timestamp creation_time,
+    //                               clap_timestamp modification_time);
     set_timestamps: procedure(receiver: Pclap_preset_discovery_metadata_receiver; creation_time, modification_time: Tclap_timestamp); cdecl;
 
     // Adds a feature to the preset.
@@ -2843,7 +3078,7 @@ type
     // Actual location in which to crawl presets.
     // For FILE kind, the location can be either a path to a directory or a file.
     // For PLUGIN kind, the location must be null.
-   	location: PAnsiChar; // Actual location in which to crawl presets
+   	location: PAnsiChar;
   end;
   Pclap_preset_discovery_location = ^Tclap_preset_discovery_location;
 
@@ -2887,6 +3122,7 @@ type
     destroy: procedure(provider: Pclap_preset_discovery_provider); cdecl;
 
     // reads metadata from the given file and passes them to the metadata receiver
+    // Returns true on success.
     //bool(CLAP_ABI *get_metadata)(const struct clap_preset_discovery_provider     *provider,
     //                             uint32_t                                         location_kind,
     //                             const char                                      *location,
@@ -2907,9 +3143,9 @@ type
   Tclap_preset_discovery_indexer = record
     clap_version: Tclap_version; // initialized to CLAP_VERSION
     name: PAnsiChar;         // eg: "Bitwig Studio"
-    vendor: PAnsiChar;       // eg: optional, "Bitwig GmbH"
-    url: PAnsiChar;          // eg: optional, "https://bitwig.com"
-    version: PAnsiChar;      // eg: optional, "4.3", see plugin.h for advice on how to format the version
+    vendor: PAnsiChar;       // optional, eg: "Bitwig GmbH"
+    url: PAnsiChar;          // optional, eg: "https://bitwig.com"
+    version: PAnsiChar;      // optional, eg: "4.3", see plugin.h for advice on how to format the version
 
     indexer_data: TObject; // reserved pointer for the indexer
 
@@ -2975,6 +3211,108 @@ type
     //   const clap_preset_indexer_t                *indexer,
     //   const char                                 *provider_id);
     create: function(factory: Pclap_preset_discovery_factory; indexer: Pclap_preset_discovery_indexer; provider_id: PAnsiChar): Pclap_preset_discovery_provider; cdecl;
+  end;
+
+//factory\draft\plugin-state-converter.h
+
+type
+  Tclap_plugin_state_converter_descriptor = record
+    clap_version: Tclap_version;
+
+    src_plugin_id: Tclap_universal_plugin_id;
+    dst_plugin_id: Tclap_universal_plugin_id;
+
+    id: PAnsiChar;          // eg: "com.u-he.diva-converter", mandatory
+    name: PAnsiChar;        // eg: "Diva Converter", mandatory
+    vendor: PAnsiChar;      // eg: "u-he"
+    version: PAnsiChar;     // eg: 1.1.5
+    description: PAnsiChar; // eg: "Official state converter for u-he Diva."
+  end;
+  Pclap_plugin_state_converter_descriptor = ^Tclap_plugin_state_converter_descriptor;
+
+// This interface provides a mechanism for the host to convert a plugin state and its automation
+// points to a new plugin.
+//
+// This is useful to convert from one plugin ABI to another one.
+// This is also useful to offer an upgrade path: from EQ version 1 to EQ version 2.
+// This can also be used to convert the state of a plugin that isn't maintained anymore into
+// another plugin that would be similar.
+type
+  Pclap_plugin_state_converter = ^Tclap_plugin_state_converter;
+  Tclap_plugin_state_converter = record
+    desc: Pclap_plugin_state_converter_descriptor;
+
+    converter_data: pointer;
+
+    // Destroy the converter.
+    //void (*destroy)(struct clap_plugin_state_converter *converter);
+    destroy: procedure(converter: Pclap_plugin_state_converter); cdecl;
+
+    // Converts the input state to a state usable by the destination plugin.
+    //
+    // error_buffer is a place holder of error_buffer_size bytes for storing a null-terminated
+    // error message in case of failure, which can be displayed to the user.
+    //
+    // Returns true on success.
+    // [thread-safe]
+    //bool (*convert_state)(const struct clap_plugin_state_converter *converter,
+    //                      const clap_istream_t                     *src,
+    //                      const clap_ostream_t                     *dst,
+    //                      char                                     *error_buffer,
+    //                      size_t                                    error_buffer_size);
+    convert_state: function(converter: Pclap_plugin_state_converter; src: Pclap_istream; dst: Pclap_ostream; error_buffer: PAnsiChar; error_buffer_size: size_t): boolean; cdecl;
+
+    // Converts a normalized value.
+    // Returns true on success.
+    // [thread-safe]
+    //bool (*convert_normalized_value)(const struct clap_plugin_state_converter *converter,
+    //                                 clap_id                                   src_param_id,
+    //                                 double                                    src_normalized_value,
+    //                                 clap_id                                  *dst_param_id,
+    //                                 double                                   *dst_normalized_value);
+    convert_normalized_value: function(converter: Pclap_plugin_state_converter; src_param_id: Tclap_id; src_normalized_value: double;
+                                       var dst_param_id: Tclap_id; var dst_normalized_value: double): boolean; cdecl;
+
+    // Converts a plain value.
+    // Returns true on success.
+    // [thread-safe]
+    //bool (*convert_plain_value)(const struct clap_plugin_state_converter *converter,
+    //                           clap_id                                   src_param_id,
+    //                           double                                    src_plain_value,
+    //                           clap_id                                  *dst_param_id,
+    //                           double                                   *dst_plain_value);
+    convert_plain_value: function(converter: Pclap_plugin_state_converter; src_param_id: Tclap_id; src_plain_value: double;
+                                  var dst_param_id: Tclap_id; var dst_plain_value: double): boolean; cdecl;
+  end;
+
+// Factory identifier
+const
+  CLAP_CLAP_CONVERTER_FACTORY_ID = AnsiString('clap.plugin-state-converter-factory/1');
+
+// List all the plugin state converters available in the current DSO.
+type
+  Pclap_plugin_state_converter_factory = ^Tclap_plugin_state_converter_factory;
+  Tclap_plugin_state_converter_factory = record
+    // Get the number of converters.
+    // [thread-safe]
+    //uint32_t (*count)(const struct clap_plugin_state_converter_factory *factory);
+    count: function(factory: Pclap_plugin_state_converter_factory): UInt32; cdecl;
+
+    // Retrieves a plugin state converter descriptor by its index.
+    // Returns null in case of error.
+    // The descriptor must not be freed.
+    // [thread-safe]
+    //const clap_plugin_state_converter_descriptor_t *(*get_descriptor)(
+	//  const struct clap_plugin_state_converter_factory *factory, uint32_t index);
+    get_descriptor: function(factory: Pclap_plugin_state_converter_factory; index: UInt32): Pclap_plugin_state_converter_descriptor; cdecl;
+
+    // Create a plugin state converter by its converter_id.
+    // The returned pointer must be freed by calling converter->destroy(converter);
+    // Returns null in case of error.
+    // [thread-safe]
+    //clap_plugin_state_converter_t *(*create)(
+	//  const struct clap_plugin_state_converter_factory *factory, const char *converter_id);
+    create: function(factory: Pclap_plugin_state_converter_factory; converter_id: PAnsiChar): Pclap_plugin_state_converter; cdecl;
   end;
 
 implementation
