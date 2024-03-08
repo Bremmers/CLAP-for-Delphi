@@ -40,7 +40,7 @@ type
   int16_t = Int16;
   int32_t = Int32;
   int64_t = Int64;
-  size_t = LongWord;
+  size_t = NativeUInt;
 
 //version.h
 
