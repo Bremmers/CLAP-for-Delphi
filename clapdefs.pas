@@ -56,7 +56,7 @@ type
 const
   CLAP_VERSION_MAJOR = 1;
   CLAP_VERSION_MINOR = 2;
-  CLAP_VERSION_REVISION = 0;
+  CLAP_VERSION_REVISION = 3;
 
   CLAP_VERSION: Tclap_version = (
     major: CLAP_VERSION_MAJOR;
@@ -118,11 +118,20 @@ type
   end;
   Pclap_color = ^Tclap_color;
 
+const
+  CLAP_COLOR_TRANSPARENT: Tclap_color = (
+    alpha: 0; red: 0; green: 0; blue: 0
+  );
 
 //events.h
 
 // event header
-// must be the first attribute of the event
+// All clap events start with an event header to determine the overall
+// size of the event and its type and space (a namespacing for types).
+// clap_event objects are contiguous regions of memory which can be copied
+// with a memcpy of `size` bytes starting at the top of the header. As
+// such, be very careful when designing clap events with internal pointers
+// and other non-value-types to consider the lifetime of those members.
 type
   Tclap_event_header = record
     size: uint32_t;      // event size including this header, eg: sizeof (clap_event_note)
@@ -258,6 +267,12 @@ type
 // Well constructed plugins will search for voices and notes using
 // the entire tuple.
 //
+// In the case of note on events:
+// - The port, channel and key must be specified with a value >= 0
+// - A note-on event with a '-1' for port, channel or key is invalid and
+//   can be rejected or ignored by a plugin or host.
+// - A host which does not support note ids should set the note id to -1.
+//
 // In the case of note choke or end events:
 // - the velocity is ignored.
 // - key and channel are used to match active notes
@@ -375,6 +390,12 @@ const
   CLAP_TRANSPORT_IS_WITHIN_PRE_ROLL = 1 shl 7;
 
 type
+// clap_event_transport provides song position, tempo, and similar information
+// from the host to the plugin. There are two ways a host communicates these values.
+// In the `clap_process` structure sent to each processing block, the host may
+// provide a transport structure which indicates the available information at the
+// start of the block. If the host provides sample-accurate tempo or transport changes,
+// it can also provide subsequent inter-block transport updates by delivering a new event.
   Tclap_event_transport = record
     header: Tclap_event_header;
 
@@ -406,12 +427,28 @@ type
     port_index: uint16_t;
     data: array[0..2] of byte;
   end;
-
+  
+// clap_event_midi_sysex contains a pointer to a sysex contents buffer.
+// The lifetime of this buffer is (from host->plugin) only the process
+// call in which the event is delivered or (from plugin->host) only the
+// duration of a try_push call.
+//
+// Since `clap_output_events.try_push` requires hosts to make a copy of
+// an event, host implementers receiving sysex messages from plugins need
+// to take care to both copy the event (so header, size, etc...) but
+// also memcpy the contents of the sysex pointer to host-owned memory, and
+// not just copy the data pointer.
+//
+// Similarly plugins retaining the sysex outside the lifetime of a single
+// process call must copy the sysex buffer to plugin-owned memory.
+//
+// As a consequence, the data structure pointed to by the sysex buffer
+// must be contiguous and copyable with `memcpy` of `size` bytes.
   Tclap_event_midi_sysex = record
     header: Tclap_event_header;
 
     port_index: uint16_t;
-    buffer: pointer; // midi buffer
+    buffer: pointer; // midi buffer. See lifetime comment above.
     size: uint32_t;
   end;
 
@@ -573,6 +610,13 @@ type
     request_process: procedure(host: Pclap_host); cdecl;
 
     // Request the host to schedule a call to plugin->on_main_thread(plugin) on the main thread.
+    // This callback should be called as soon as practicable, usually in the host application's next
+    // available main thread time slice. Typically callbacks occur within 33ms / 30hz.
+    // Despite this guidance, plugins should not make assumptions about the exactness of timing for
+    // a main thread callback, but hosts should endeavour to be prompt. For example, in high load
+    // situations the environment may starve the gui/main thread in favor of audio processing,
+    // leading to substantially longer latencies for the callback than the indicative times given
+    // here.
     // [thread-safe]
     //void (*request_callback)(const struct clap_host *host);
     request_callback: procedure(host: Pclap_host); cdecl;
@@ -641,6 +685,7 @@ type
     // In this call the plugin may allocate memory and prepare everything needed for the process
     // call. The process's sample rate will be constant and process's frame count will included in
     // the [min, max] range, which is bounded by [1, INT32_MAX].
+    // In this call the plugin may call host-provided methods marked [being-activated].
     // Once activated the latency and port configuration must remain constant, until deactivation.
     // Returns true on success.
     // [main-thread & !active]
@@ -1079,6 +1124,9 @@ const
 /// Embedding the window gives more control to the host, and feels more integrated.
 /// Floating window are sometimes the only option due to technical limitations.
 ///
+/// The Embedding protocol is by far the most common, supported by all hosts to date,
+/// and a plugin author should support at least that case.
+///
 /// Showing the GUI works as follow:
 ///  1. clap_plugin_gui->is_api_supported(), check what can work
 ///  2. clap_plugin_gui->create(), allocates gui resources
@@ -1148,7 +1196,10 @@ type
   Tclap_gui_resize_hints = record
     can_resize_horizontally: boolean;
     can_resize_vertically: boolean;
-    // only if can resize horizontally and vertically
+    // if both horizontal and vertical resize are available, do we preserve the
+    // aspect ratio, and if so, what is the width x height aspect ratio to preserve.
+    // These flags are unused if can_resize_horizontally or vertically are false,
+    // and ratios are unused if preserve is false.
     preseve_aspect_ratio: boolean;
     aspect_ratio_width: uint32_t;
     aspect_ratio_height: uint32_t;
@@ -1157,7 +1208,8 @@ type
 // Size (width, height) is in pixels; the corresponding windowing system extension is
 // responsible for defining if it is physical pixels or logical pixels.
   Tclap_plugin_gui = record
-    // Returns true if the requested gui api is supported
+    // Returns true if the requested gui api is supported, either in floating (plugin-created)
+    // or non-floating (embedded) mode.
     // [main-thread]
     //bool (*is_api_supported)(const clap_plugin_t *plugin, const char *api, bool is_floating);
     is_api_supported: function(plugin: Pclap_plugin; api: PAnsiChar; is_floating: boolean): boolean; cdecl;
@@ -2067,9 +2119,9 @@ type
     // '/' will be used as a separator to show a tree-like structure.
     module: array[0..CLAP_PATH_SIZE - 1] of byte;
 
-    min_value: double;     // Minimum plain value
-    max_value: double;     // Maximum plain value
-    default_value: double; // Default plain value
+    min_value: double;     // Minimum plain value. Must be finite (`std::isfinite` true)
+    max_value: double;     // Maximum plain value. Must be finite
+    default_value: double; // Default plain value. Must be in [min, max] range.
   end;
   Pclap_param_info = ^Tclap_param_info;
 
@@ -2256,7 +2308,7 @@ const
 type
   Tclap_plugin_latency = record
     // Returns the plugin latency in samples.
-    // [main-thread & active]
+    // [main-thread & (being-activated | active)]
     //uint32_t (*get)(const clap_plugin_t *plugin);
     get: function(plugin: Pclap_plugin): uint32_t; cdecl;
   end;
@@ -2264,9 +2316,9 @@ type
 
   Tclap_host_latency = record
     // Tell the host that the latency changed.
-    // The latency is only allowed to change if the plugin is deactivated.
+    // The latency is only allowed to change during plugin->activate.
     // If the plugin is activated, call host->request_restart()
-    // [main-thread]
+    // [main-thread & being-activated]
     //void (*changed)(const clap_host_t *host);
     changed: procedure(host: Pclap_host); cdecl;
   end;
@@ -2346,23 +2398,44 @@ const
 ///    This will be the same OS thread throughout the lifetime of the plug-in.
 ///    On macOS and Windows, this must be the thread on which gui and timer events are received
 ///    (i.e., the main thread of the program).
-///    It isn't a realtime thread, yet this thread needs to respond fast enough to user interaction,
-///    so it is recommended to run long and expensive tasks such as preset indexing or asset loading
-///    in dedicated background threads.
+///    It isn't a realtime thread, yet this thread needs to respond fast enough to allow responsive
+///    user interaction, so it is strongly recommended plugins run long,and expensive or blocking
+///    tasks such as preset indexing or asset loading in dedicated background threads started by the
+///    plugin.
 ///
 /// audio-thread:
-///    This thread is used for realtime audio processing. Its execution should be as deterministic
-///    as possible to meet the audio interface's deadline (can be <1ms). In other words, there is a
-///    known set of operations that should be avoided: malloc() and free(), mutexes (spin mutexes
-///    are worse), I/O, waiting, ...
-///    The audio-thread is something symbolic, there isn't one OS thread that remains the
-///    audio-thread for the plugin lifetime. As you may guess, the host is likely to have a
+///    This thread can be used for realtime audio processing. Its execution should be as
+///    deterministic as possible to meet the audio interface's deadline (can be <1ms). There are a
+///    known set of operations that should be avoided: malloc() and free(), contended locks and
+///    mutexes, I/O, waiting, and so forth.
+///
+///    The audio-thread is symbolic, there isn't one OS thread that remains the
+///    audio-thread for the plugin lifetime. A host is may opt to have a
 ///    thread pool and the plugin.process() call may be scheduled on different OS threads over time.
-///    The most important thing is that there can't be two audio-threads at the same time. All the
-///    functions marked with [audio-thread] **ARE NOT CONCURRENT**. The host may mark any OS thread,
+///    However, the host must guarantee that single plugin instance will not be two audio-threads
+///    at the same time.
+///
+///    Functions marked with [audio-thread] **ARE NOT CONCURRENT**. The host may mark any OS thread,
 ///    including the main-thread as the audio-thread, as long as it can guarantee that only one OS
-///    thread is the audio-thread at a time. The audio-thread can be seen as a concurrency guard for
-///    all functions marked with [audio-thread].
+///    thread is the audio-thread at a time in a plugin instance. The audio-thread can be seen as a
+///    concurrency guard for all functions marked with [audio-thread].
+///
+///    The real-time constraint on the [audio-thread] interacts closely with the render extension.
+///    If a plugin doesn't implement render, then that plugin must have all [audio-thread] functions
+///    meet the real time standard. If the plugin does implement render, and returns true when
+///    render mode is set to real-time or if the plugin advertises a hard realtime requirement, it
+///    must implement realtime constraints. Hosts also provide functions marked [audio-thread].
+///    These can be safely called by a plugin in the audio thread. Therefore hosts must either (1)
+///    implement those functions meeting the real-time constraints or (2) not process plugins which
+///    advertise a hard realtime constraint or don't implement the render extension. Hosts which
+///    provide [audio-thread] functions outside these conditions may experience inconsistent or
+///    inaccurate rendering.
+///
+///  Clap also tags some functions as [thread-safe]. Functions tagged as [thread-safe] can be called
+///  from any thread unless explicitly counter-indicated (for instance [thread-safe, !audio-thread])
+///  and may be called concurrently. Since a [thread-safe] function may be called from the
+///  [audio-thread] unless explicitly counter-indicated, it must also meet the realtime constraints
+///  as describes above.
 
 // This interface is useful to do runtime checks and make
 // sure that the functions are called on the correct threads.
@@ -2426,7 +2499,6 @@ const
    // Ends the current sub menu.
    // data: NULL
    CLAP_CONTEXT_MENU_ITEM_END_SUBMENU = 4;
-
 
    // Adds a title entry
    // data: const clap_context_menu_item_title_t *
@@ -2559,7 +2631,7 @@ type
   Pclap_host_context_menu = ^Tclap_host_context_menu;
 
 
-//ext\draft\param-indication.h
+//ext\param-indication.h
 
 // This extension lets the host tell the plugin to display a little color based indication on the
 // parameter. This can be used to indicate:
@@ -2832,6 +2904,36 @@ type
     request_toggle_record: procedure(host: Pclap_host); cdecl;
   end;
   Pclap_host_transport_control = ^Tclap_host_transport_control;
+
+
+//ext\draft\gain-adjustment-metering.h
+
+// This extension lets the plugin report the current gain adjustment
+// (typically, gain reduction) to the host.
+
+const
+  CLAP_EXT_GAIN_ADJUSTMENT_METERING = 'clap.gain-adjustment-metering/0';
+
+type
+  Tclap_plugin_gain_adjustment_metering = record
+    // Returns the current gain adjustment in dB. The value is intended
+    // for informational display, for example in a host meter or tooltip.
+    // The returned value represents the gain adjustment that the plugin
+    // applied to the last sample in the most recently processed block.
+    //
+    // The returned value is in dB. Zero means the plugin is applying no gain
+    // reduction, or is not processing. A negative value means the plugin is
+    // applying gain reduction, as with a compressor or limiter. A positive
+    // value means the plugin is adding gain, as with an expander. The value
+    // represents the dynamic gain reduction or expansion applied by the
+    // plugin, before any make-up gain or other adjustment. A single value is
+    // returned for all audio channels.
+    //
+    // [audio-thread]
+    //double(CLAP_ABI *get)(const clap_plugin_t *plugin);
+    get: function(plugin: Pclap_plugin): double; cdecl;
+  end;
+  Pclap_plugin_gain_adjustment_metering = ^Tclap_plugin_gain_adjustment_metering;
 
 
 //ext\preset-load.h
@@ -3303,7 +3405,7 @@ type
     // The descriptor must not be freed.
     // [thread-safe]
     //const clap_plugin_state_converter_descriptor_t *(*get_descriptor)(
-	//  const struct clap_plugin_state_converter_factory *factory, uint32_t index);
+    //  const struct clap_plugin_state_converter_factory *factory, uint32_t index);
     get_descriptor: function(factory: Pclap_plugin_state_converter_factory; index: UInt32): Pclap_plugin_state_converter_descriptor; cdecl;
 
     // Create a plugin state converter by its converter_id.
@@ -3311,7 +3413,7 @@ type
     // Returns null in case of error.
     // [thread-safe]
     //clap_plugin_state_converter_t *(*create)(
-	//  const struct clap_plugin_state_converter_factory *factory, const char *converter_id);
+    //  const struct clap_plugin_state_converter_factory *factory, const char *converter_id);
     create: function(factory: Pclap_plugin_state_converter_factory; converter_id: PAnsiChar): Pclap_plugin_state_converter; cdecl;
   end;
 
