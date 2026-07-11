@@ -56,7 +56,7 @@ type
 const
   CLAP_VERSION_MAJOR = 1;
   CLAP_VERSION_MINOR = 2;
-  CLAP_VERSION_REVISION = 3;
+  CLAP_VERSION_REVISION = 9;
 
   CLAP_VERSION: Tclap_version = (
     major: CLAP_VERSION_MAJOR;
@@ -451,6 +451,7 @@ type
     buffer: pointer; // midi buffer. See lifetime comment above.
     size: uint32_t;
   end;
+  Pclap_event_midi_sysex = ^Tclap_event_midi_sysex;
 
 // While it is possible to use a series of midi2 event to send a sysex,
 // prefer clap_event_midi_sysex if possible for efficiency.
@@ -1179,6 +1180,7 @@ const
 type
   Tclap_hwnd = pointer;
   Tclap_nsview = pointer;
+  Tclap_uiview = pointer;
   Tclap_xwnd = UInt32;
 
 // Represent a window reference.
@@ -1186,9 +1188,10 @@ type
     api: PAnsiChar; // one of CLAP_WINDOW_API_XXX
     case integer of
     0:(cocoa: Tclap_nsview);
-    1:(x11: Tclap_xwnd);
-    2:(win32: Tclap_hwnd);
-    3:(ptr: pointer); // for anything defined outside of clap
+    1:(uikit: Tclap_uiview);
+    2:(x11: Tclap_xwnd);
+    3:(win32: Tclap_hwnd);
+    4:(ptr: pointer); // for anything defined outside of clap
   end;
   Pclap_window = ^Tclap_window;
 
@@ -2834,6 +2837,45 @@ type
   Pclap_host_track_info = ^Tclap_host_track_info;
 
 
+//ext\draft\flush-events.h
+
+const
+  CLAP_EXT_FLUSH_EVENTS = AnsiString('clap.flush-events/1');
+
+type
+  Tclap_plugin_flush_events = record
+    // Flushes a set of events.
+    // This method must not be called concurrently to clap_plugin->process().
+    //
+    // Note: if the plugin is processing, then the process() call will already perform events I/O, so
+    // a call to flush isn't required, also be aware that the plugin may use the sample offset in
+    // process(), while this information would be lost within flush().
+    //
+    // [active ? audio-thread : main-thread]
+    //void(CLAP_ABI *flush)(const clap_plugin_t        *plugin,
+    //                      const clap_input_events_t  *in,
+    //                      const clap_output_events_t *out);
+    flush: procedure(plugin: Pclap_plugin; inevents: Pclap_input_events; outevents: Pclap_output_events); cdecl;
+  end;
+  Pclap_plugin_flush_events = ^Tclap_plugin_flush_events;
+
+  Tclap_host_flush_events = record
+    // Request an event flush.
+    //
+    // The host will then schedule a call to either:
+    // - clap_plugin.process()
+    // - clap_plugin_flush_events.flush()
+    //
+    // This function is always safe to use and should not be called from an [audio-thread] as the
+    // plugin would already be within process() or flush().
+    //
+    // [thread-safe,!audio-thread]
+    //void(CLAP_ABI *request_flush)(const clap_host_t *host);
+    request_flush: procedure(host: Pclap_host); cdecl;
+  end;
+  Pclap_host_flush_events = ^Tclap_host_flush_events;
+
+
 //ext\draft\transport-control.h
 
 // This extension lets the plugin submit transport requests to the host.
@@ -2841,7 +2883,7 @@ type
 // partially working.
 
 const
-  CLAP_EXT_TRANSPORT_CONTROL = AnsiString('clap.transport-control/1');
+  CLAP_EXT_TRANSPORT_CONTROL = AnsiString('clap.transport-control/2');
 
 type
   Tclap_host_transport_control = record
@@ -2902,6 +2944,16 @@ type
     // [main-thread]
     //void(CLAP_ABI *request_toggle_record)(const clap_host_t *host);
     request_toggle_record: procedure(host: Pclap_host); cdecl;
+
+    // Sets tempo
+    // [main-thread]
+    //void(CLAP_ABI *request_tempo)(const clap_host_t *host, double tempo);
+    request_tempo: procedure(host: Pclap_host; tempo: double); cdecl;
+
+    // Sets time signature, same format as in clap_event_transport_t.
+    // [main-thread]
+    //void(CLAP_ABI *request_time_signature)(const clap_host_t *host, uint16_t tsig_num, uint16_t tsig_denom);
+    request_time_signature: procedure(host: Pclap_host; tsig_num, tsig_denom: uint16_t); cdecl;
   end;
   Pclap_host_transport_control = ^Tclap_host_transport_control;
 
@@ -3347,7 +3399,7 @@ type
     converter_data: pointer;
 
     // Destroy the converter.
-    //void (*destroy)(struct clap_plugin_state_converter *converter);
+    //void (CLAP_ABI *destroy)(struct clap_plugin_state_converter *converter);
     destroy: procedure(converter: Pclap_plugin_state_converter); cdecl;
 
     // Converts the input state to a state usable by the destination plugin.
@@ -3357,7 +3409,7 @@ type
     //
     // Returns true on success.
     // [thread-safe]
-    //bool (*convert_state)(const struct clap_plugin_state_converter *converter,
+    //bool (CLAP_ABI *convert_state)(const struct clap_plugin_state_converter *converter,
     //                      const clap_istream_t                     *src,
     //                      const clap_ostream_t                     *dst,
     //                      char                                     *error_buffer,
@@ -3367,7 +3419,7 @@ type
     // Converts a normalized value.
     // Returns true on success.
     // [thread-safe]
-    //bool (*convert_normalized_value)(const struct clap_plugin_state_converter *converter,
+    //bool (CLAP_ABI *convert_normalized_value)(const struct clap_plugin_state_converter *converter,
     //                                 clap_id                                   src_param_id,
     //                                 double                                    src_normalized_value,
     //                                 clap_id                                  *dst_param_id,
@@ -3378,7 +3430,7 @@ type
     // Converts a plain value.
     // Returns true on success.
     // [thread-safe]
-    //bool (*convert_plain_value)(const struct clap_plugin_state_converter *converter,
+    //bool (CLAP_ABI *convert_plain_value)(const struct clap_plugin_state_converter *converter,
     //                           clap_id                                   src_param_id,
     //                           double                                    src_plain_value,
     //                           clap_id                                  *dst_param_id,
@@ -3397,14 +3449,14 @@ type
   Tclap_plugin_state_converter_factory = record
     // Get the number of converters.
     // [thread-safe]
-    //uint32_t (*count)(const struct clap_plugin_state_converter_factory *factory);
+    //uint32_t (CLAP_ABI *count)(const struct clap_plugin_state_converter_factory *factory);
     count: function(factory: Pclap_plugin_state_converter_factory): UInt32; cdecl;
 
     // Retrieves a plugin state converter descriptor by its index.
     // Returns null in case of error.
     // The descriptor must not be freed.
     // [thread-safe]
-    //const clap_plugin_state_converter_descriptor_t *(*get_descriptor)(
+    //const clap_plugin_state_converter_descriptor_t *(CLAP_ABI *get_descriptor)(
     //  const struct clap_plugin_state_converter_factory *factory, uint32_t index);
     get_descriptor: function(factory: Pclap_plugin_state_converter_factory; index: UInt32): Pclap_plugin_state_converter_descriptor; cdecl;
 
@@ -3412,7 +3464,7 @@ type
     // The returned pointer must be freed by calling converter->destroy(converter);
     // Returns null in case of error.
     // [thread-safe]
-    //clap_plugin_state_converter_t *(*create)(
+    //clap_plugin_state_converter_t *(CLAP_ABI *create)(
     //  const struct clap_plugin_state_converter_factory *factory, const char *converter_id);
     create: function(factory: Pclap_plugin_state_converter_factory; converter_id: PAnsiChar): Pclap_plugin_state_converter; cdecl;
   end;
